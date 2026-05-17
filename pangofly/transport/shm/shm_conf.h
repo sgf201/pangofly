@@ -33,7 +33,6 @@ private:
   uint64_t channel_id_ = 0;
 
   static const uint32_t EXTRA_SIZE;
-  static const uint32_t STATE_SIZE;
   static const uint32_t SHM_BLOCK_SIZE;
   static const uint32_t MESSAGE_INFO_SIZE;
   static const uint32_t MESSAGE_SIZE_1K;

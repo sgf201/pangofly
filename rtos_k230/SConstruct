@@ -1,0 +1,7 @@
+import os
+import sys
+
+from building import *
+
+target = 'pangofly_test'
+BuildApplication(target, 'SConscript')

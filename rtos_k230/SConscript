@@ -1,0 +1,28 @@
+from building import *
+
+cwd = GetCurrentDir()
+src = [
+    '../pangofly/transport/shm/segment.cc',
+    '../pangofly/transport/shm/shm_conf.cc',
+    '../pangofly/transport/shm/state.cc',
+    '../pangofly/transport/shm/k230_shm.cc',
+    '../pangofly/node/node.cc',
+    '../pangofly/pangofly.cc',
+    '../pangofly/examples/shm_example.cc',
+]
+
+CPPPATH = [
+    cwd,
+    '../',
+]
+
+CPPDEFINES = [
+    'RT_USING_NEWLIB',
+    'HAVE_CCONFIG_H',
+    'PANGOFLY_PLATFORM_K230',
+]
+
+group = DefineGroup('pangofly', src, depend = [''], CPPPATH = CPPPATH, CPPDEFINES = CPPDEFINES)
+group = group + LinkBridge()
+
+Return('group')

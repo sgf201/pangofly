@@ -14,13 +14,13 @@ namespace transport {
 PosixSegment::PosixSegment(uint64_t channel_id, std::string channel_name)
     : Segment(channel_id, channel_name) {
   shm_name_ = shm_prefix_ + std::to_string(channel_id);
-  fixed_address_ = 0x7f5c29100000ULL + (channel_id % 100) * 0x1000000ULL;
+  fixed_address_ = 0x100100000ULL + (channel_id % 100) * 0x200000ULL;
 }
 
 PosixSegment::PosixSegment(std::string prefix, uint64_t channel_id, size_t size)
     : Segment(channel_id, size) {
   shm_name_ = prefix + std::to_string(channel_id);
-  fixed_address_ = 0x7f5c29100000ULL + (channel_id % 100) * 0x1000000ULL;
+  fixed_address_ = 0x100100000ULL + (channel_id % 100) * 0x200000ULL;
 }
 
 PosixSegment::~PosixSegment() { PosixSegment::Destroy(); }
@@ -51,25 +51,30 @@ bool PosixSegment::OpenOrCreate(bool& open_only) {
   }
 
   void* desired_addr = reinterpret_cast<void*>(fixed_address_);
+  PANGOFLY_INFO << "Trying to map shm at fixed address: " << desired_addr << ", size: " << conf_.managed_shm_size() << std::endl;
+  
   managed_shm_ = mmap(desired_addr, conf_.managed_shm_size(), PROT_READ | PROT_WRITE,
                       MAP_SHARED | MAP_FIXED, fd, 0);
   
   if (managed_shm_ == MAP_FAILED || managed_shm_ != desired_addr) {
-    std::error_code ec(errno, std::generic_category());
-    PANGOFLY_ERROR << "mmap to fixed address failed: " << ec.message() << std::endl;
+    PANGOFLY_WARN << "Fixed address mapping failed, trying any address..." << std::endl;
     
-    void* fallback_addr = mmap(nullptr, conf_.managed_shm_size(), PROT_READ | PROT_WRITE,
-                               MAP_SHARED, fd, 0);
-    if (fallback_addr == MAP_FAILED) {
+    managed_shm_ = mmap(nullptr, conf_.managed_shm_size(), PROT_READ | PROT_WRITE,
+                        MAP_SHARED, fd, 0);
+    if (managed_shm_ == MAP_FAILED) {
+      std::error_code ec(errno, std::generic_category());
+      PANGOFLY_ERROR << "mmap failed: " << ec.message() << std::endl;
       close(fd);
       shm_unlink(shm_name_.c_str());
       return false;
     }
-    managed_shm_ = fallback_addr;
     PANGOFLY_WARN << "Using fallback address: " << managed_shm_ << std::endl;
   } else {
     PANGOFLY_INFO << "Successfully mapped shm to fixed address: " << managed_shm_ << std::endl;
   }
+  
+  // 调试：检查共享内存内容
+  PANGOFLY_INFO << "shm_name: " << shm_name_ << ", fd: " << fd << std::endl;
 
   close(fd);
 
@@ -130,21 +135,23 @@ bool PosixSegment::OpenOnly() {
   }
 
   void* desired_addr = reinterpret_cast<void*>(fixed_address_);
+  PANGOFLY_INFO << "Trying to open shm at fixed address: " << desired_addr << ", size: " << file_attr.st_size << std::endl;
+  
   managed_shm_ = mmap(desired_addr, static_cast<size_t>(file_attr.st_size),
                       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
   
   if (managed_shm_ == MAP_FAILED || managed_shm_ != desired_addr) {
-    std::error_code ec(errno, std::generic_category());
-    PANGOFLY_ERROR << "mmap to fixed address failed: " << ec.message() << std::endl;
+    PANGOFLY_WARN << "Fixed address mapping failed, trying any address..." << std::endl;
     
-    void* fallback_addr = mmap(nullptr, static_cast<size_t>(file_attr.st_size),
-                               PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (fallback_addr == MAP_FAILED) {
+    managed_shm_ = mmap(nullptr, static_cast<size_t>(file_attr.st_size),
+                        PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (managed_shm_ == MAP_FAILED) {
+      std::error_code ec(errno, std::generic_category());
+      PANGOFLY_ERROR << "mmap failed: " << ec.message() << std::endl;
       close(fd);
       return false;
     }
-    managed_shm_ = fallback_addr;
-    PANGOFLY_WARN << "Using fallback address in open_only: " << managed_shm_ << std::endl;
+    PANGOFLY_WARN << "Using fallback address: " << managed_shm_ << std::endl;
   } else {
     PANGOFLY_INFO << "Successfully mapped existing shm to fixed address: " << managed_shm_ << std::endl;
   }

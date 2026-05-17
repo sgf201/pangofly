@@ -5,7 +5,14 @@
 #include <string>
 
 #include "pangofly/node/reader.h"
+
+#ifdef PANGOFLY_PLATFORM_K230
+#include "pangofly/transport/shm/k230_shm.h"
+#define PANGOFLY_SEGMENT_TYPE transport::K230Shm
+#else
 #include "pangofly/transport/shm/posix_segment.h"
+#define PANGOFLY_SEGMENT_TYPE transport::PosixSegment
+#endif
 
 namespace pangofly {
 
@@ -20,7 +27,7 @@ class ShmReader : public Reader<MessageT>, public ReaderBase {
 public:
   explicit ShmReader(const std::string& channel_name) 
       : channel_name_(channel_name),
-        segment_(std::make_shared<transport::PosixSegment>(
+        segment_(std::make_shared<PANGOFLY_SEGMENT_TYPE>(
             std::hash<std::string>()(channel_name), channel_name)) {
     bool open_only = false;
     segment_->OpenOrCreate(open_only);
@@ -59,7 +66,7 @@ public:
 
 private:
   std::string channel_name_;
-  std::shared_ptr<transport::PosixSegment> segment_;
+  std::shared_ptr<PANGOFLY_SEGMENT_TYPE> segment_;
   CallbackFunc<MessageT> callback_;
 };
 

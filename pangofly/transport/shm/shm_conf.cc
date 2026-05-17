@@ -1,13 +1,15 @@
 #include "pangofly/transport/shm/shm_conf.h"
+#include "pangofly/transport/shm/state.h"
 
 namespace pangofly {
 namespace transport {
 
 const uint32_t ShmConf::EXTRA_SIZE = 128;
-const uint32_t ShmConf::STATE_SIZE = 64;
 const uint32_t ShmConf::SHM_BLOCK_SIZE = 32;
 const uint32_t ShmConf::MESSAGE_INFO_SIZE = 48;
 const uint32_t ShmConf::MESSAGE_SIZE_1K = 1024;
+
+static constexpr uint32_t STATE_SIZE = sizeof(State);
 
 ShmConf::ShmConf(std::string channel_name) : channel_id_(std::hash<std::string>()(channel_name)) {
   ceiling_msg_size_ = MESSAGE_SIZE_1K;

@@ -78,6 +78,7 @@ protected:
   State* state_ = nullptr;
   Block* blocks_ = nullptr;
   void* managed_shm_ = nullptr;
+  void* fixed_address_ = nullptr;
   std::unordered_map<uint32_t, uint8_t*> block_buf_addrs_;
   static std::string shm_prefix_;
 

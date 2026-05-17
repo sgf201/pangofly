@@ -1,5 +1,7 @@
 #include "pangofly/transport/shm/segment.h"
 
+#include <atomic>
+
 #include "pangofly/common/log.h"
 
 namespace pangofly {
@@ -39,8 +41,10 @@ bool Segment::AcquireBlockToWrite(std::size_t msg_size, WritableBlock* writable_
 
 void Segment::ReleaseWrittenBlock(const WritableBlock& writable_block) {
   if (writable_block.block != nullptr) {
-    writable_block.block->set_sequence(state_->GetSequence(writable_block.index) + 1);
+    uint32_t old_seq = state_->GetSequence(writable_block.index);
+    writable_block.block->set_sequence(old_seq + 1);
     state_->SetSequence(writable_block.index, writable_block.block->sequence());
+    std::atomic_thread_fence(std::memory_order_release);
   }
 }
 
@@ -48,6 +52,8 @@ bool Segment::AcquireBlockToRead(ReadableBlock* readable_block) {
   if (!init_) {
     return false;
   }
+
+  std::atomic_thread_fence(std::memory_order_acquire);
 
   for (uint32_t i = 0; i < conf_.block_num(); ++i) {
     if (blocks_[i].sequence() > 0) {
@@ -77,6 +83,11 @@ bool Segment::AcquireFixedBlock(std::size_t msg_size, WritableBlock* writable_bl
 }
 
 void Segment::ReleaseReadBlock(const ReadableBlock& readable_block) {
+  if (readable_block.block != nullptr) {
+    state_->SetSequence(readable_block.index, 0);
+    readable_block.block->set_sequence(0);
+    std::atomic_thread_fence(std::memory_order_release);
+  }
 }
 
 bool Segment::HasOwnerShip(char* ptr) {

@@ -3,6 +3,8 @@
 #include <thread>
 #include <chrono>
 #include <cstring>
+#include <unistd.h>
+#include <sys/wait.h>
 
 #include "pangofly/pangofly.h"
 
@@ -12,7 +14,8 @@ struct TestMessage {
   char name[64];
 };
 
-void WriterThread() {
+void WriterProcess() {
+  std::cout << "Writer process started, PID=" << getpid() << std::endl;
   std::this_thread::sleep_for(std::chrono::seconds(1));
   
   auto node = pangofly::CreateNode("writer_node");
@@ -33,7 +36,8 @@ void WriterThread() {
   std::cout << "Writer done!" << std::endl;
 }
 
-void ReaderThread() {
+void ReaderProcess() {
+  std::cout << "Reader process started, PID=" << getpid() << std::endl;
   auto node = pangofly::CreateNode("reader_node");
   auto reader = node->CreateReader<TestMessage>("test_channel");
   
@@ -55,13 +59,33 @@ void ReaderThread() {
 }
 
 int main() {
-  std::cout << "Starting Pangofly SHM test..." << std::endl;
+  std::cout << "Starting Pangofly SHM test (multi-process)..." << std::endl;
   
-  std::thread writer(WriterThread);
-  std::thread reader(ReaderThread);
+  pid_t writer_pid = fork();
+  if (writer_pid == 0) {
+    // Writer process
+    WriterProcess();
+    return 0;
+  } else if (writer_pid < 0) {
+    std::cerr << "Failed to fork writer process" << std::endl;
+    return 1;
+  }
   
-  writer.join();
-  reader.join();
+  pid_t reader_pid = fork();
+  if (reader_pid == 0) {
+    // Reader process
+    ReaderProcess();
+    return 0;
+  } else if (reader_pid < 0) {
+    std::cerr << "Failed to fork reader process" << std::endl;
+    kill(writer_pid, SIGKILL);
+    return 1;
+  }
+  
+  // Parent process waits
+  int status;
+  waitpid(writer_pid, &status, 0);
+  waitpid(reader_pid, &status, 0);
   
   std::cout << "Test completed!" << std::endl;
   return 0;

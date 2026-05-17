@@ -1,10 +1,18 @@
 #ifndef PANGOFLY_NODE_WRITER_BASE_H_
 #define PANGOFLY_NODE_WRITER_BASE_H_
 
+#include <memory>
 #include <string>
 
 #include "pangofly/node/writer.h"
+
+#ifdef PANGOFLY_PLATFORM_K230
+#include "pangofly/transport/shm/k230_shm.h"
+#define PANGOFLY_SEGMENT_TYPE transport::K230Shm
+#else
 #include "pangofly/transport/shm/posix_segment.h"
+#define PANGOFLY_SEGMENT_TYPE transport::PosixSegment
+#endif
 
 namespace pangofly {
 
@@ -19,7 +27,7 @@ class ShmWriter : public Writer<MessageT>, public WriterBase {
 public:
   explicit ShmWriter(const std::string& channel_name) 
       : channel_name_(channel_name),
-        segment_(std::make_shared<transport::PosixSegment>(
+        segment_(std::make_shared<PANGOFLY_SEGMENT_TYPE>(
             std::hash<std::string>()(channel_name), channel_name)) {
     bool open_only = false;
     segment_->OpenOrCreate(open_only);
@@ -54,7 +62,7 @@ public:
 
 private:
   std::string channel_name_;
-  std::shared_ptr<transport::PosixSegment> segment_;
+  std::shared_ptr<PANGOFLY_SEGMENT_TYPE> segment_;
 };
 
 } // namespace pangofly
