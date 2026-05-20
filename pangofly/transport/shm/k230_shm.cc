@@ -66,7 +66,7 @@ namespace transport {
 static const size_t SHM_KEY_BASE = 0x80000000;
 
 #ifndef PANGOFLY_RESERVE_ADDR
-#define PANGOFLY_RESERVE_ADDR   0x104D00000ULL
+#define PANGOFLY_RESERVE_ADDR   0x120000000ULL
 #endif
 
 static const uint64_t FIXED_VADDR_BASE = PANGOFLY_RESERVE_ADDR;
