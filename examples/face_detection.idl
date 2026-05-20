@@ -1,0 +1,44 @@
+namespace pangofly.examples {
+
+struct Point3D {
+    float x;
+    float y;
+    float z;
+};
+
+struct BoundingBox {
+    Point3D min_point;
+    Point3D max_point;
+};
+
+struct FaceDetectionResult {
+    int32_t id;
+    float score;
+    BoundingBox bbox;
+    string name;
+    vector<int32_t> landmarks;
+};
+
+struct ImageFrame {
+    int64_t timestamp;
+    int32_t width;
+    int32_t height;
+    string format;
+    vector<FaceDetectionResult> faces;
+    vector<Point3D> keypoints;
+};
+
+struct DetectionStats {
+    int32_t total_faces;
+    int32_t tracked_faces;
+    float avg_confidence;
+    int64_t processing_time_us;
+};
+
+struct CombinedResults {
+    ImageFrame frame;
+    DetectionStats stats;
+    vector<string> tags;
+};
+
+}
