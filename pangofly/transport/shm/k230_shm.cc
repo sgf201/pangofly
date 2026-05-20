@@ -64,7 +64,12 @@ namespace pangofly {
 namespace transport {
 
 static const size_t SHM_KEY_BASE = 0x80000000;
-static const uint64_t FIXED_VADDR_BASE = 0x102700000ULL;
+
+#ifndef PANGOFLY_RESERVE_ADDR
+#define PANGOFLY_RESERVE_ADDR   0x104D00000ULL
+#endif
+
+static const uint64_t FIXED_VADDR_BASE = PANGOFLY_RESERVE_ADDR;
 static const uint64_t FIXED_VADDR_STEP = 0x200000ULL;
 
 static size_t shm_name_to_key(const std::string& name) {
