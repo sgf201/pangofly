@@ -16,18 +16,35 @@ file(GLOB_RECURSE PANGOFLY_SRCS
   "${PROJECT_SOURCE_DIR}/pangofly/*.cc"
 )
 
+list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*k230_shm\\.cc$")
+list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*nonpod_writer\\.cc$")
+list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*nonpod_reader\\.cc$")
+list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*writer\\.cc$")
+list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*reader\\.cc$")
+list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*shm_example\\.cc$")
+
 add_library(pangofly SHARED ${PANGOFLY_SRCS})
 
 target_link_libraries(pangofly pthread rt)
 
-add_executable(shm_test
-  ${PROJECT_SOURCE_DIR}/design/test/test.cpp
-)
-
-target_link_libraries(shm_test rt)
+# add_executable(shm_test
+#   ${PROJECT_SOURCE_DIR}/design/test/test.cpp
+# )
+# target_link_libraries(shm_test rt)
 
 add_executable(pangofly_test
   ${PROJECT_SOURCE_DIR}/pangofly/examples/shm_example.cc
 )
 
 target_link_libraries(pangofly_test pangofly pthread rt)
+
+add_executable(pangofly_nonpod_test
+  ${PROJECT_SOURCE_DIR}/examples/nonpod_shm_example.cc
+)
+
+target_include_directories(pangofly_nonpod_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/idl
+  ${PROJECT_SOURCE_DIR}/idl/container
+)
+
+target_link_libraries(pangofly_nonpod_test pangofly pthread rt)
