@@ -2,6 +2,8 @@
 
 #include <cstddef>
 
+#include "../allocator/block_allocator.h"
+
 namespace pangofly {
 
 class String {
@@ -96,59 +98,55 @@ public:
 
     void swap(String& other);
 
-    bool is_shared() const { return shared_; }
-    void set_shared(bool shared) { shared_ = shared; }
+    void set_block_allocator(BlockAllocator* allocator) { allocator_ = allocator; }
+    BlockAllocator* get_block_allocator() const { return allocator_; }
 
 private:
     char* data_;
     size_type size_;
     size_type capacity_;
-    bool shared_;
+    BlockAllocator* allocator_;
 
     static size_t strlen_(const char* s);
-    static int strcmp_(const char* a, const char* b);
-    static int strncmp_(const char* a, const char* b, size_t n);
-    static char* strcpy_(char* dest, const char* src);
-    static char* strncpy_(char* dest, const char* src, size_t n);
 };
 
-// Inline implementations
-
 inline String::String() 
-    : data_(nullptr), size_(0), capacity_(0), shared_(false) {}
+    : data_(nullptr), size_(0), capacity_(0), allocator_(nullptr) {}
 
 inline String::String(const char* s) 
-    : data_(nullptr), size_(0), capacity_(0), shared_(false) {
+    : data_(nullptr), size_(0), capacity_(0), allocator_(nullptr) {
     if (s) {
         assign(s);
     }
 }
 
 inline String::String(const char* s, size_type count) 
-    : data_(nullptr), size_(0), capacity_(0), shared_(false) {
+    : data_(nullptr), size_(0), capacity_(0), allocator_(nullptr) {
     assign(s, count);
 }
 
 inline String::String(size_type count, char c) 
-    : data_(nullptr), size_(0), capacity_(0), shared_(false) {
+    : data_(nullptr), size_(0), capacity_(0), allocator_(nullptr) {
     resize(count, c);
 }
 
 inline String::String(const String& other) 
-    : data_(nullptr), size_(0), capacity_(0), shared_(false) {
+    : data_(nullptr), size_(0), capacity_(0), allocator_(other.allocator_) {
     assign(other.data_, other.size_);
 }
 
 inline String::String(String&& other) noexcept 
     : data_(other.data_), size_(other.size_), 
-      capacity_(other.capacity_), shared_(other.shared_) {
+      capacity_(other.capacity_), allocator_(other.allocator_) {
     other.data_ = nullptr;
     other.size_ = 0;
     other.capacity_ = 0;
 }
 
 inline String::~String() {
-    if (data_ && !shared_) {
+    if (data_ && allocator_) {
+        allocator_->deallocate(data_);
+    } else if (data_) {
         delete[] data_;
     }
 }
@@ -163,13 +161,15 @@ inline String& String::operator=(const String& other) {
 
 inline String& String::operator=(String&& other) noexcept {
     if (this != &other) {
-        if (data_ && !shared_) {
+        if (data_ && allocator_) {
+            allocator_->deallocate(data_);
+        } else if (data_) {
             delete[] data_;
         }
         data_ = other.data_;
         size_ = other.size_;
         capacity_ = other.capacity_;
-        shared_ = other.shared_;
+        allocator_ = other.allocator_;
         other.data_ = nullptr;
         other.size_ = 0;
         other.capacity_ = 0;
@@ -189,15 +189,22 @@ inline String& String::assign(const char* s) {
 }
 
 inline String& String::assign(const char* s, size_type count) {
-    if (capacity_ < count) {
-        if (data_ && !shared_) {
+    if (capacity_ < count + 1) {
+        if (data_ && allocator_) {
+            allocator_->deallocate(data_);
+        } else if (data_) {
             delete[] data_;
         }
-        data_ = new char[count + 1];
+        if (allocator_) {
+            data_ = static_cast<char*>(allocator_->allocate(count + 1));
+        } else {
+            data_ = new char[count + 1];
+        }
         capacity_ = count;
-        shared_ = false;
     }
-    strncpy_(data_, s, count);
+    for (size_type i = 0; i < count; ++i) {
+        data_[i] = s[i];
+    }
     data_[count] = '\0';
     size_ = count;
     return *this;
@@ -212,13 +219,18 @@ inline String& String::assign(String&& other) noexcept {
 }
 
 inline String& String::assign(size_type count, char c) {
-    if (capacity_ < count) {
-        if (data_ && !shared_) {
+    if (capacity_ < count + 1) {
+        if (data_ && allocator_) {
+            allocator_->deallocate(data_);
+        } else if (data_) {
             delete[] data_;
         }
-        data_ = new char[count + 1];
+        if (allocator_) {
+            data_ = static_cast<char*>(allocator_->allocate(count + 1));
+        } else {
+            data_ = new char[count + 1];
+        }
         capacity_ = count;
-        shared_ = false;
     }
     for (size_type i = 0; i < count; ++i) {
         data_[i] = c;
@@ -268,33 +280,45 @@ inline String::const_reference String::back() const {
 
 inline void String::reserve(size_type new_cap) {
     if (new_cap > capacity_) {
-        char* new_data = new char[new_cap + 1];
+        char* new_data = nullptr;
+        if (allocator_) {
+            new_data = static_cast<char*>(allocator_->allocate(new_cap + 1));
+        } else {
+            new_data = new char[new_cap + 1];
+        }
         for (size_type i = 0; i < size_; ++i) {
             new_data[i] = data_[i];
         }
         new_data[size_] = '\0';
-        if (data_ && !shared_) {
+        if (data_ && allocator_) {
+            allocator_->deallocate(data_);
+        } else if (data_) {
             delete[] data_;
         }
         data_ = new_data;
         capacity_ = new_cap;
-        shared_ = false;
     }
 }
 
 inline void String::shrink_to_fit() {
     if (capacity_ > size_) {
-        char* new_data = new char[size_ + 1];
+        char* new_data = nullptr;
+        if (allocator_) {
+            new_data = static_cast<char*>(allocator_->allocate(size_ + 1));
+        } else {
+            new_data = new char[size_ + 1];
+        }
         for (size_type i = 0; i < size_; ++i) {
             new_data[i] = data_[i];
         }
         new_data[size_] = '\0';
-        if (data_ && !shared_) {
+        if (data_ && allocator_) {
+            allocator_->deallocate(data_);
+        } else if (data_) {
             delete[] data_;
         }
         data_ = new_data;
         capacity_ = size_;
-        shared_ = false;
     }
 }
 
@@ -325,7 +349,9 @@ inline String& String::append(const char* s, size_type count) {
         while (new_cap < old_size + count) new_cap *= 2;
         reserve(new_cap);
     }
-    strncpy_(data_ + old_size, s, count);
+    for (size_type i = 0; i < count; ++i) {
+        data_[old_size + i] = s[i];
+    }
     size_ = old_size + count;
     data_[size_] = '\0';
     return *this;
@@ -365,12 +391,21 @@ inline String String::substr(size_type pos, size_type count) const {
 
 inline String& String::replace(size_type pos, size_type count, const char* s) {
     size_type len = strlen_(s);
-    String temp;
-    temp.reserve(size_ - count + len);
-    temp.append(data_, pos);
-    temp.append(s, len);
-    temp.append(data_ + pos + count, size_ - pos - count);
-    return *this = std::move(temp);
+    if (pos + count > size_) {
+        while (true) {}
+    }
+    if (capacity_ < size_ - count + len) {
+        reserve(size_ - count + len);
+    }
+    for (size_type i = pos + count; i < size_; ++i) {
+        data_[i - count + len] = data_[i];
+    }
+    for (size_type i = 0; i < len; ++i) {
+        data_[pos + i] = s[i];
+    }
+    size_ = size_ - count + len;
+    data_[size_] = '\0';
+    return *this;
 }
 
 inline String& String::replace(size_type pos, size_type count, const String& str) {
@@ -459,9 +494,9 @@ inline void String::swap(String& other) {
     capacity_ = other.capacity_;
     other.capacity_ = temp_cap;
     
-    bool temp_shared = shared_;
-    shared_ = other.shared_;
-    other.shared_ = temp_shared;
+    BlockAllocator* temp_alloc = allocator_;
+    allocator_ = other.allocator_;
+    other.allocator_ = temp_alloc;
 }
 
 inline size_t String::strlen_(const char* s) {
@@ -469,44 +504,6 @@ inline size_t String::strlen_(const char* s) {
     size_t len = 0;
     while (s[len] != '\0') len++;
     return len;
-}
-
-inline int String::strcmp_(const char* a, const char* b) {
-    if (!a && !b) return 0;
-    if (!a) return -1;
-    if (!b) return 1;
-    while (*a && *b && *a == *b) {
-        a++;
-        b++;
-    }
-    return *a - *b;
-}
-
-inline int String::strncmp_(const char* a, const char* b, size_t n) {
-    if (!a && !b) return 0;
-    if (!a) return -1;
-    if (!b) return 1;
-    for (size_t i = 0; i < n; i++) {
-        if (a[i] != b[i]) return a[i] - b[i];
-        if (a[i] == '\0') return 0;
-    }
-    return 0;
-}
-
-inline char* String::strcpy_(char* dest, const char* src) {
-    if (!dest || !src) return dest;
-    char* ptr = dest;
-    while ((*ptr++ = *src++) != '\0');
-    return dest;
-}
-
-inline char* String::strncpy_(char* dest, const char* src, size_t n) {
-    if (!dest || !src) return dest;
-    char* ptr = dest;
-    for (size_t i = 0; i < n; i++) {
-        ptr[i] = src[i];
-    }
-    return dest;
 }
 
 inline bool operator==(const String& a, const String& b) {
