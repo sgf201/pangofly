@@ -73,6 +73,20 @@ public:
         release_block(block);
     }
     
+    void deallocate_block(void* ptr) {
+        if (!ptr || !pool_) return;
+        
+        BlockHeader* block = reinterpret_cast<BlockHeader*>(
+            reinterpret_cast<char*>(ptr) - sizeof(BlockHeader)
+        );
+        
+        if (block->magic != PANGOFLY_BLOCK_MAGIC) {
+            return;
+        }
+        
+        release_block(block);
+    }
+    
     size_t get_block_size() const { return block_size_; }
     size_t get_max_allocation_size() const {
         return block_size_ - sizeof(BlockHeader);
