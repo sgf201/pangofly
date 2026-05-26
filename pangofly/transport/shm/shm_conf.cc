@@ -42,7 +42,16 @@ uint32_t ShmConf::GetCeilingMessageSize(const uint32_t& real_msg_size) {
   if (real_msg_size <= 2048) return 2048;
   if (real_msg_size <= 4096) return 4096;
   if (real_msg_size <= 8192) return 8192;
-  return 16384;
+  if (real_msg_size <= 16384) return 16384;
+  if (real_msg_size <= 32768) return 32768;
+  if (real_msg_size <= 65536) return 65536;
+  if (real_msg_size <= 131072) return 131072;
+  if (real_msg_size <= 262144) return 262144;
+  if (real_msg_size <= 524288) return 524288;
+  if (real_msg_size <= 1048576) return 1048576;
+  if (real_msg_size <= 2097152) return 2097152;
+  if (real_msg_size <= 4194304) return 4194304;
+  return 8388608;
 }
 
 uint32_t ShmConf::GetBlockBufSize(const uint32_t& ceiling_message_size) {
@@ -52,7 +61,10 @@ uint32_t ShmConf::GetBlockBufSize(const uint32_t& ceiling_message_size) {
 uint16_t ShmConf::GetBlockNum(const uint32_t& ceiling_message_size) {
   if (ceiling_message_size <= 1024) return 64;
   if (ceiling_message_size <= 4096) return 32;
-  return 16;
+  if (ceiling_message_size <= 16384) return 16;
+  if (ceiling_message_size <= 65536) return 8;
+  if (ceiling_message_size <= 262144) return 4;
+  return 2;
 }
 
 } // namespace transport
