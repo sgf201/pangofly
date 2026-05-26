@@ -1,0 +1,26 @@
+#!/usr/bin/expect
+
+set password "sss"
+set host "192.168.58.5"
+set username "root"
+
+# Download files from HTTP server
+spawn ssh $username@$host
+expect "password:"
+send "$password\r"
+expect "# "
+
+# Download files
+send "cd /root && wget http://192.168.98.32:8000/gesture_publisher_pod\r"
+expect "# "
+send "wget http://192.168.98.32:8000/gesture_subscriber_pod\r"
+expect "# "
+send "cd /usr/lib && wget http://192.168.98.32:8000/../build_k230/libpangofly.so\r"
+expect "# "
+
+# Make executable
+send "chmod +x /root/gesture_publisher_pod /root/gesture_subscriber_pod\r"
+expect "# "
+
+send "exit\r"
+expect eof
