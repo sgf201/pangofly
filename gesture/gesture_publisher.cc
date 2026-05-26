@@ -1,118 +1,137 @@
-// Pangofly Gesture Publisher
-// Reads camera images and publishes via Pangofly shared memory
-
 #include <iostream>
-#include <thread>
-#include <chrono>
-#include <fcntl.h>
-#include <cstring>
-#include <sys/mman.h>
-#include <unistd.h>
-#include <atomic>
-#include <mutex>
 #include <memory>
+#include <unistd.h>
+#include <thread>
+#include <atomic>
+#include <chrono>
 
-#include "pangofly/pangofly.h"
-#include "idl/container/vector.h"
+#include "pangofly/pangofly.hpp"
 
-// Define our message structures
-struct ImageFrame {
+extern "C" {
+#include "media.h"
+#include "k_vicap_comm.h"
+}
+
+struct ImageMessage {
     uint64_t timestamp;
-    int32_t width;
-    int32_t height;
-    int32_t format;  // 0: NV12, 1: RGB
-    uint64_t data_size;
-    pangofly::Vector<uint8_t> data;
+    int width;
+    int height;
+    int format;  // 0: NV12, 1: RGB
+    size_t data_size;
+    char data[4096];
 };
 
-std::atomic<bool> running(true);
-
-// Simulated or actual V4L2 image capture
-// In a real implementation, this would use the same approach as camera_rtsp_demo
-bool CaptureImageMock(uint8_t** data, uint64_t* size, int* width, int* height) {
-    static uint8_t* dummy_buffer = nullptr;
-    static bool initialized = false;
+class GesturePublisher {
+public:
+    GesturePublisher() : running_(false), writer_(nullptr) {}
     
-    if (!initialized) {
-        *width = 640;
-        *height = 480;
-        *size = (*width) * (*height) * 3 / 2; // NV12 format
-        dummy_buffer = new uint8_t[*size];
-        
-        // Initialize with a test pattern
-        for (int i = 0; i < *width * *height; ++i) {
-            dummy_buffer[i] = 128 + (i % 256); // Y plane
-        }
-        for (uint64_t i = *width * *height; i < *size; ++i) {
-            dummy_buffer[i] = 128; // UV plane
-        }
-        
-        initialized = true;
+    ~GesturePublisher() {
+        Stop();
     }
     
-    *data = dummy_buffer;
-    return true;
-}
-
-void PublisherMain() {
-    std::cout << "Pangofly Gesture Publisher starting..." << std::endl;
-    
-    // Initialize Pangofly
-    if (!pangofly::Init()) {
-        std::cerr << "Failed to initialize Pangofly" << std::endl;
-        return;
-    }
-    
-    // Create node and writer
-    auto node = pangofly::CreateNode("gesture_publisher");
-    auto writer = node->CreateWriter<ImageFrame>("gesture_channel");
-    
-    std::cout << "Publisher node created. Starting image capture..." << std::endl;
-    
-    int width, height;
-    uint8_t* image_data;
-    uint64_t data_size;
-    uint64_t frame_count = 0;
-    
-    while (running) {
-        // Capture image
-        if (CaptureImageMock(&image_data, &data_size, &width, &height)) {
-            // Prepare message
-            ImageFrame frame;
-            frame.timestamp = frame_count++;
-            frame.width = width;
-            frame.height = height;
-            frame.format = 0; // NV12
-            frame.data_size = data_size;
-            
-            // Copy image data
-            frame.data.reserve(data_size);
-            for (uint64_t i = 0; i < data_size; ++i) {
-                frame.data.push_back(image_data[i]);
-            }
-            
-            // Write to Pangofly
-            bool success = writer->Write(frame);
-            if (success && frame_count % 30 == 0) {
-                std::cout << "Published frame " << frame_count 
-                          << ", size=" << data_size << std::endl;
-            }
+    int Init(const std::string& channel_name = "gesture_channel") {
+        node_ = pangofly::CreateNode("gesture_publisher");
+        if (!node_) {
+            std::cerr << "Failed to create node" << std::endl;
+            return -1;
         }
         
-        // Control frame rate
-        std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 FPS
+        writer_ = node_->CreateWriter<ImageMessage>(channel_name);
+        if (!writer_) {
+            std::cerr << "Failed to create writer" << std::endl;
+            return -1;
+        }
+        
+        std::cout << "Gesture Publisher initialized" << std::endl;
+        return 0;
     }
     
-    std::cout << "Publisher shutting down..." << std::endl;
-    pangofly::Shutdown();
-}
+    int Start() {
+        if (running_) return 0;
+        
+        running_ = true;
+        
+        // Initialize media for camera capture
+        KdMediaInputConfig config;
+        config.video_valid = true;
+        config.sensor_type = SENSOR_TYPE_MAX;
+        config.sensor_num = 1;
+        config.video_type = KdMediaVideoType::kVideoTypeMjpeg;
+        config.venc_width = 640;
+        config.venc_height = 480;
+        config.bitrate_kbps = 2000;
+        
+        if (media_.Init(config) < 0) {
+            std::cerr << "Failed to initialize media" << std::endl;
+            return -1;
+        }
+        
+        if (media_.CreateVcapVEnc(this) < 0) {
+            std::cerr << "Failed to create VcapVEnc" << std::endl;
+            return -1;
+        }
+        
+        if (media_.StartVcapVEnc() < 0) {
+            std::cerr << "Failed to start VcapVEnc" << std::endl;
+            return -1;
+        }
+        
+        std::cout << "Gesture Publisher started, capturing camera..." << std::endl;
+        return 0;
+    }
+    
+    int Stop() {
+        if (!running_) return 0;
+        
+        running_ = false;
+        
+        media_.StopVcapVEnc();
+        media_.DestroyVcapVEnc();
+        media_.Deinit();
+        
+        writer_.reset();
+        node_.reset();
+        
+        std::cout << "Gesture Publisher stopped" << std::endl;
+        return 0;
+    }
+    
+    void OnVEncData(k_u32 chn_id, void *data, size_t size, k_venc_pack_type type, uint64_t timestamp) override {
+        if (!running_ || !writer_) return;
+        
+        ImageMessage msg;
+        msg.timestamp = timestamp;
+        msg.width = 640;
+        msg.height = 480;
+        msg.format = 1;  // MJPEG
+        msg.data_size = std::min(size, sizeof(msg.data));
+        memcpy(msg.data, data, msg.data_size);
+        
+        bool success = writer_->Write(msg);
+        std::cout << "Published image: size=" << msg.data_size << ", success=" << success << std::endl;
+    }
+    
+private:
+    std::atomic<bool> running_;
+    std::unique_ptr<pangofly::Node> node_;
+    std::unique_ptr<pangofly::Writer<ImageMessage>> writer_;
+    KdMedia media_;
+};
 
-int main(int argc, char* argv[]) {
-    std::cout << "Pangofly Gesture Publisher" << std::endl;
-    std::cout << "Press Ctrl+C to stop" << std::endl;
+int main() {
+    GesturePublisher publisher;
     
-    // Run publisher
-    PublisherMain();
+    if (publisher.Init() != 0) {
+        return -1;
+    }
     
+    if (publisher.Start() != 0) {
+        return -1;
+    }
+    
+    std::cout << "Press Enter to stop..." << std::endl;
+    std::cin.get();
+    
+    publisher.Stop();
     return 0;
 }
