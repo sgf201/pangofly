@@ -16,7 +16,10 @@ file(GLOB_RECURSE PANGOFLY_SRCS
   "${PROJECT_SOURCE_DIR}/pangofly/*.cc"
 )
 
+# For build_k230, we use PosixSegment instead of K230Shm
+# because lwp_shmget syscall may not work on all K230 builds
 list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*k230_shm\\.cc$")
+
 list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*nonpod_writer\\.cc$")
 list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*nonpod_reader\\.cc$")
 list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*writer\\.cc$")
@@ -26,11 +29,6 @@ list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*shm_example\\.cc$")
 add_library(pangofly SHARED ${PANGOFLY_SRCS})
 
 target_link_libraries(pangofly pthread rt)
-
-# add_executable(shm_test
-#   ${PROJECT_SOURCE_DIR}/design/test/test.cpp
-# )
-# target_link_libraries(shm_test rt)
 
 add_executable(pangofly_test
   ${PROJECT_SOURCE_DIR}/pangofly/examples/shm_example.cc

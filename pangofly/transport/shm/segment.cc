@@ -10,7 +10,7 @@ namespace transport {
 std::string Segment::shm_prefix_ = "/pangofly_shm_";
 
 Segment::Segment(uint64_t channel_id, std::string channel_name)
-    : conf_(channel_name), channel_id_(channel_id), channel_name_(channel_name) {}
+    : conf_(static_cast<uint32_t>(1024*1024), channel_id), channel_id_(channel_id), channel_name_(channel_name) {}
 
 Segment::Segment(uint64_t channel_id, std::size_t min_size)
     : conf_(static_cast<uint32_t>(min_size), channel_id), channel_id_(channel_id) {}

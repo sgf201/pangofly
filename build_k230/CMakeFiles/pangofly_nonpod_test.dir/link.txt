@@ -1,0 +1,1 @@
+/home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/bin/riscv64-unknown-linux-gnu-g++  -march=rv64imafdc -mabi=lp64d -march=rv64imafdc -mabi=lp64d -Wall -Wextra -fPIC CMakeFiles/pangofly_nonpod_test.dir/examples/nonpod_shm_example.cc.o -o pangofly_nonpod_test  -Wl,-rpath,/home/sgf/ws/pangofly/build_k230 libpangofly.so -lpthread -lrt 

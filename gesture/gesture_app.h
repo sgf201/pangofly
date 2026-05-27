@@ -8,6 +8,10 @@
 #include <mutex>
 #include <thread>
 
+#define SENSOR_WIDTH 640
+#define SENSOR_HEIGHT 480
+#define SENSOR_CHANNEL 3
+
 struct GestureResult {
     int64_t timestamp;
     std::string gesture;
@@ -18,12 +22,20 @@ struct GestureResult {
     int height;
 };
 
+struct ImageFrame {
+    int64_t timestamp;
+    int32_t width;
+    int32_t height;
+    int32_t format;
+    uint8_t data[SENSOR_WIDTH * SENSOR_HEIGHT * SENSOR_CHANNEL];
+};
+
 class GesturePublisher {
 public:
     GesturePublisher(const std::string& channel_name);
     ~GesturePublisher();
     
-    bool Init(int video_device = 0);
+    bool Init(int video_device = -1);
     bool Start();
     void Stop();
     bool IsRunning() const { return running_.load(); }

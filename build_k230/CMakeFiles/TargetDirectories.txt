@@ -1,0 +1,5 @@
+/home/sgf/ws/pangofly/build_k230/CMakeFiles/pangofly.dir
+/home/sgf/ws/pangofly/build_k230/CMakeFiles/pangofly_test.dir
+/home/sgf/ws/pangofly/build_k230/CMakeFiles/pangofly_nonpod_test.dir
+/home/sgf/ws/pangofly/build_k230/CMakeFiles/edit_cache.dir
+/home/sgf/ws/pangofly/build_k230/CMakeFiles/rebuild_cache.dir

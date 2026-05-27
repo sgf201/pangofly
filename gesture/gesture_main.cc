@@ -7,20 +7,51 @@ void print_usage(const char* name) {
     std::cout << "Modes:" << std::endl;
     std::cout << "  publisher   - Start gesture publisher" << std::endl;
     std::cout << "  subscriber  - Start gesture subscriber" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Options for publisher:" << std::endl;
+    std::cout << "  -d <device>   Video device number (default: -1, use simulated data)" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Options for subscriber:" << std::endl;
+    std::cout << "  -m <model>    Path to gesture recognition model (optional)" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Examples:" << std::endl;
+    std::cout << "  " << name << " publisher" << std::endl;
+    std::cout << "  " << name << " publisher -d 0" << std::endl;
+    std::cout << "  " << name << " subscriber" << std::endl;
+    std::cout << "  " << name << " subscriber -m /path/to/model.kmodel" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
+    std::cout << "Pangofly Gesture Application" << std::endl;
+    std::cout << "Built at: " << __DATE__ << " " << __TIME__ << std::endl;
+    
     if (argc < 2) {
         print_usage(argv[0]);
         return -1;
     }
     
     std::string mode = argv[1];
+    int video_device = -1;
+    std::string model_path = "";
+    
+    // 解析命令行参数
+    for (int i = 2; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg == "-d" && i + 1 < argc) {
+            video_device = std::stoi(argv[i + 1]);
+            i++;
+        } else if (arg == "-m" && i + 1 < argc) {
+            model_path = argv[i + 1];
+            i++;
+        }
+    }
     
     if (mode == "publisher") {
-        std::cout << "Starting gesture publisher..." << std::endl;
+        std::cout << "\nStarting gesture publisher..." << std::endl;
+        std::cout << "Video device: " << (video_device >= 0 ? std::to_string(video_device) : "simulated") << std::endl;
+        
         GesturePublisher publisher("gesture_channel");
-        if (!publisher.Init(0)) {
+        if (!publisher.Init(video_device)) {
             std::cerr << "Failed to init publisher" << std::endl;
             return -1;
         }
@@ -29,15 +60,19 @@ int main(int argc, char* argv[]) {
             return -1;
         }
         
-        std::cout << "Publisher started. Press Enter to stop..." << std::endl;
+        std::cout << "\nPublisher started. Press Enter to stop..." << std::endl;
         std::cin.get();
         publisher.Stop();
         std::cout << "Publisher stopped." << std::endl;
         
     } else if (mode == "subscriber") {
-        std::cout << "Starting gesture subscriber..." << std::endl;
+        std::cout << "\nStarting gesture subscriber..." << std::endl;
+        if (!model_path.empty()) {
+            std::cout << "Model path: " << model_path << std::endl;
+        }
+        
         GestureSubscriber subscriber("gesture_channel");
-        if (!subscriber.Init("")) {
+        if (!subscriber.Init(model_path)) {
             std::cerr << "Failed to init subscriber" << std::endl;
             return -1;
         }
@@ -46,7 +81,7 @@ int main(int argc, char* argv[]) {
             return -1;
         }
         
-        std::cout << "Subscriber started. Press Enter to stop..." << std::endl;
+        std::cout << "\nSubscriber started. Press Enter to stop..." << std::endl;
         std::cin.get();
         subscriber.Stop();
         std::cout << "Subscriber stopped." << std::endl;

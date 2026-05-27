@@ -1,0 +1,30 @@
+CMakeFiles/pangofly.dir/pangofly/transport/shm/state.cc.o: \
+ /home/sgf/ws/pangofly/pangofly/transport/shm/state.cc \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/stdc-predef.h \
+ /home/sgf/ws/pangofly/pangofly/transport/shm/state.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/riscv64-unknown-linux-gnu/include/c++/10.2.0/cstdint \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/riscv64-unknown-linux-gnu/include/c++/10.2.0/riscv64-unknown-linux-gnu/lib64/lp64d/bits/c++config.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/riscv64-unknown-linux-gnu/include/c++/10.2.0/riscv64-unknown-linux-gnu/lib64/lp64d/bits/os_defines.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/features.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/sys/cdefs.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/bits/wordsize.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/bits/long-double.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/gnu/stubs.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/gnu/stubs-lp64d.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/riscv64-unknown-linux-gnu/include/c++/10.2.0/riscv64-unknown-linux-gnu/lib64/lp64d/bits/cpu_defines.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/riscv64-unknown-linux-gnu/include/c++/10.2.0/pstl/pstl_config.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/lib/gcc/riscv64-unknown-linux-gnu/10.2.0/include/stdint.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/stdint.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/bits/libc-header-start.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/bits/types.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/bits/timesize.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/bits/typesizes.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/bits/time64.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/bits/wchar.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/bits/stdint-intn.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/sysroot/usr/include/bits/stdint-uintn.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/riscv64-unknown-linux-gnu/include/c++/10.2.0/atomic \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/riscv64-unknown-linux-gnu/include/c++/10.2.0/bits/atomic_base.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/riscv64-unknown-linux-gnu/include/c++/10.2.0/bits/atomic_lockfree_defines.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/riscv64-unknown-linux-gnu/include/c++/10.2.0/bits/move.h \
+ /home/sgf/ws/.kendryte/k230_toolchains/Xuantie-900-gcc-linux-5.10.4-glibc-x86_64-V2.6.0/riscv64-unknown-linux-gnu/include/c++/10.2.0/type_traits

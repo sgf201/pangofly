@@ -28,7 +28,7 @@ public:
   explicit ShmReader(const std::string& channel_name) 
       : channel_name_(channel_name),
         segment_(std::make_shared<PANGOFLY_SEGMENT_TYPE>(
-            "/shm", std::hash<std::string>()(channel_name), sizeof(MessageT))) {
+            std::hash<std::string>()(channel_name), channel_name)) {
     bool open_only = false;
     segment_->OpenOrCreate(open_only);
   }
