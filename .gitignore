@@ -1,5 +1,14 @@
 build/
 build_linux/
+build_k230/
 CMakeLists_linux.txt
 toolchain-riscv64.cmake
+gesture/gesture_app
+gesture/gesture_publisher_pod
+gesture/gesture_subscriber_pod
+gesture/gesture_publisher_simple
+gesture/gesture_subscriber_simple
+*.o
+*.a
+*.so
 

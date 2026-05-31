@@ -6,13 +6,8 @@
 
 #include "pangofly/node/reader.h"
 
-#ifdef PANGOFLY_PLATFORM_K230
-#include "pangofly/transport/shm/k230_shm.h"
-#define PANGOFLY_SEGMENT_TYPE transport::K230Shm
-#else
 #include "pangofly/transport/shm/posix_segment.h"
 #define PANGOFLY_SEGMENT_TYPE transport::PosixSegment
-#endif
 
 namespace pangofly {
 

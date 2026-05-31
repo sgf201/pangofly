@@ -3,7 +3,10 @@
 #include <iostream>
 #include <chrono>
 #include <cstring>
+#include <cstdio>
 #include <stdexcept>
+#include <errno.h>
+#include <algorithm>
 
 #ifdef PANGOFLY_PLATFORM_K230
 #include <linux/videodev2.h>
@@ -12,6 +15,47 @@
 #include <fcntl.h>
 #include <unistd.h>
 #endif
+
+static inline int clamp(int v) {
+    return std::max(0, std::min(255, v));
+}
+
+static void yuyv_to_rgb(const uint8_t* yuyv, uint8_t* rgb, int width, int height) {
+    for (int i = 0; i < width * height; i += 2) {
+        int y0 = yuyv[i * 2];
+        int u  = yuyv[i * 2 + 1];
+        int y1 = yuyv[i * 2 + 2];
+        int v  = yuyv[i * 2 + 3];
+        
+        int c0 = y0 - 16;
+        int c1 = y1 - 16;
+        int d = u - 128;
+        int e = v - 128;
+        
+        int r0 = clamp((298 * c0 + 409 * e + 128) >> 8);
+        int g0 = clamp((298 * c0 - 100 * d - 208 * e + 128) >> 8);
+        int b0 = clamp((298 * c0 + 516 * d + 128) >> 8);
+        
+        int r1 = clamp((298 * c1 + 409 * e + 128) >> 8);
+        int g1 = clamp((298 * c1 - 100 * d - 208 * e + 128) >> 8);
+        int b1 = clamp((298 * c1 + 516 * d + 128) >> 8);
+        
+        rgb[i * 3]     = r0;
+        rgb[i * 3 + 1] = g0;
+        rgb[i * 3 + 2] = b0;
+        rgb[i * 3 + 3] = r1;
+        rgb[i * 3 + 4] = g1;
+        rgb[i * 3 + 5] = b1;
+    }
+}
+
+static void bgr_to_rgb(const uint8_t* bgr, uint8_t* rgb, int width, int height) {
+    for (int i = 0; i < width * height; i++) {
+        rgb[i * 3]     = bgr[i * 3 + 2];
+        rgb[i * 3 + 1] = bgr[i * 3 + 1];
+        rgb[i * 3 + 2] = bgr[i * 3];
+    }
+}
 
 AIBase::AIBase(const char *kmodel_file, const std::string model_name, const int debug_mode)
     : model_name_(model_name), debug_mode_(debug_mode), kmodel_interp_(nullptr) {
@@ -180,71 +224,67 @@ void GesturePublisher::CaptureLoop() {
 #ifdef PANGOFLY_PLATFORM_K230
     int fd = -1;
     struct v4l2_format fmt;
-    struct v4l2_requestbuffers req;
-    struct v4l2_buffer buf;
-    void* buffer_start[4] = {nullptr};
+    int selected_fmt = 0;
+    int selected_width = 0;
+    int selected_height = 0;
     
     if (video_device_ >= 0) {
         char dev_name[32];
         snprintf(dev_name, sizeof(dev_name), "/dev/video%d", video_device_);
+        std::cout << "Opening video device: " << dev_name << std::endl;
         fd = open(dev_name, O_RDWR);
         if (fd < 0) {
-            std::cerr << "Failed to open video device" << std::endl;
+            std::cerr << "Failed to open video device " << dev_name << ": " << strerror(errno) << std::endl;
+        } else {
+            std::cout << "Successfully opened video device: " << dev_name << std::endl;
         }
     }
     
     if (fd >= 0) {
         memset(&fmt, 0, sizeof(fmt));
         fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        fmt.fmt.pix.width = SENSOR_WIDTH;
-        fmt.fmt.pix.height = SENSOR_HEIGHT;
-        fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB24;
-        fmt.fmt.pix.field = V4L2_FIELD_NONE;
         
-        if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
-            std::cerr << "Failed to set video format" << std::endl;
-            close(fd);
-            fd = -1;
-        }
-        
-        memset(&req, 0, sizeof(req));
-        req.count = 4;
-        req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        req.memory = V4L2_MEMORY_MMAP;
-        
-        if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
-            std::cerr << "Failed to request buffers" << std::endl;
-            close(fd);
-            fd = -1;
-        }
-        
-        for (int i = 0; i < 4; i++) {
-            memset(&buf, 0, sizeof(buf));
-            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            buf.memory = V4L2_MEMORY_MMAP;
-            buf.index = i;
+        if (ioctl(fd, VIDIOC_G_FMT, &fmt) >= 0) {
+            char fmt_str[5] = {0};
+            memcpy(fmt_str, &fmt.fmt.pix.pixelformat, 4);
+            std::cout << "Current format: " << fmt_str 
+                      << " (" << fmt.fmt.pix.width << "x" << fmt.fmt.pix.height << ")" << std::endl;
             
-            if (ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
-                std::cerr << "Failed to query buffer" << std::endl;
-                break;
+            selected_fmt = fmt.fmt.pix.pixelformat;
+            selected_width = fmt.fmt.pix.width;
+            selected_height = fmt.fmt.pix.height;
+            
+            if (selected_width > SENSOR_WIDTH || selected_height > SENSOR_HEIGHT) {
+                selected_width = SENSOR_WIDTH;
+                selected_height = SENSOR_HEIGHT;
+                fmt.fmt.pix.width = selected_width;
+                fmt.fmt.pix.height = selected_height;
+                fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+                
+                if (ioctl(fd, VIDIOC_S_FMT, &fmt) >= 0) {
+                    std::cout << "Set format to YUYV (" << selected_width << "x" << selected_height << ")" << std::endl;
+                    selected_fmt = V4L2_PIX_FMT_YUYV;
+                }
             }
             
-            buffer_start[i] = mmap(nullptr, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buf.m.offset);
-            if (buffer_start[i] == MAP_FAILED) {
-                std::cerr << "Failed to mmap buffer" << std::endl;
-                break;
-            }
-        }
-        
-        enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        if (ioctl(fd, VIDIOC_STREAMON, &type) < 0) {
-            std::cerr << "Failed to start stream" << std::endl;
+            int frame_size = selected_width * selected_height * 2;
+            std::cout << "Using READ mode, frame size: " << frame_size << " bytes" << std::endl;
+        } else {
+            std::cerr << "Failed to get format: " << strerror(errno) << std::endl;
             close(fd);
             fd = -1;
         }
     }
     
     int frame_count = 0;
+    std::vector<uint8_t> capture_buffer;
+    
+    if (fd >= 0) {
+        int frame_size = selected_width * selected_height * 2;
+        capture_buffer.resize(frame_size);
+        std::cout << "Capture buffer size: " << frame_size << " bytes" << std::endl;
+    }
+    
     while (running_.load()) {
         ImageFrame frame;
         frame.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -254,13 +294,38 @@ void GesturePublisher::CaptureLoop() {
         frame.format = 0;
         
         if (fd >= 0) {
-            memset(&buf, 0, sizeof(buf));
-            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            buf.memory = V4L2_MEMORY_MMAP;
+            int capture_width = selected_width > 0 ? selected_width : SENSOR_WIDTH;
+            int capture_height = selected_height > 0 ? selected_height : SENSOR_HEIGHT;
+            int bytes_to_read = capture_width * capture_height * 2;
             
-            if (ioctl(fd, VIDIOC_DQBUF, &buf) >= 0) {
-                memcpy(frame.data, buffer_start[buf.index], SENSOR_WIDTH * SENSOR_HEIGHT * SENSOR_CHANNEL);
-                ioctl(fd, VIDIOC_QBUF, &buf);
+            ssize_t bytes_read = read(fd, capture_buffer.data(), bytes_to_read);
+            if (bytes_read > 0) {
+                if (selected_fmt == V4L2_PIX_FMT_YUYV) {
+                    yuyv_to_rgb(capture_buffer.data(), 
+                                frame.data, capture_width, capture_height);
+                } else if (selected_fmt == V4L2_PIX_FMT_BGR24) {
+                    bgr_to_rgb(capture_buffer.data(), 
+                               frame.data, capture_width, capture_height);
+                } else {
+                    int copy_size = (int)bytes_read;
+                    int max_size = SENSOR_WIDTH * SENSOR_HEIGHT * SENSOR_CHANNEL;
+                    if (copy_size > max_size) copy_size = max_size;
+                    memcpy(frame.data, capture_buffer.data(), copy_size);
+                }
+                
+                if (frame_count % 10 == 0) {
+                    char filename[64];
+                    snprintf(filename, sizeof(filename), "/tmp/camera_raw_%06d.ppm", frame_count);
+                    FILE *fp = fopen(filename, "wb");
+                    if (fp) {
+                        fprintf(fp, "P6\n%d %d\n255\n", frame.width, frame.height);
+                        fwrite(frame.data, 1, frame.width * frame.height * 3, fp);
+                        fclose(fp);
+                        std::cout << "Saved raw camera frame to " << filename << std::endl;
+                    }
+                }
+            } else if (frame_count % 30 == 0) {
+                std::cerr << "Failed to read frame " << frame_count << ": " << strerror(errno) << std::endl;
             }
         } else {
             int data_size = frame.width * frame.height * SENSOR_CHANNEL;
@@ -279,14 +344,6 @@ void GesturePublisher::CaptureLoop() {
     }
     
     if (fd >= 0) {
-        enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        ioctl(fd, VIDIOC_STREAMOFF, &type);
-        
-        for (int i = 0; i < 4; i++) {
-            if (buffer_start[i] != nullptr) {
-                munmap(buffer_start[i], SENSOR_WIDTH * SENSOR_HEIGHT * SENSOR_CHANNEL * 2);
-            }
-        }
         close(fd);
     }
     
@@ -415,6 +472,18 @@ void GestureSubscriber::ProcessLoop() {
             std::cout << "Detected gesture: " << result.gesture 
                       << " (id=" << gesture_id 
                       << ", confidence=" << result.confidence << ")" << std::endl;
+            
+            if (frame_count % 10 == 0) {
+                char filename[64];
+                snprintf(filename, sizeof(filename), "/tmp/gesture_frame_%06d.ppm", frame_count);
+                FILE *fp = fopen(filename, "wb");
+                if (fp) {
+                    fprintf(fp, "P6\n%d %d\n255\n", frame.width, frame.height);
+                    fwrite(frame.data, 1, frame.width * frame.height * 3, fp);
+                    fclose(fp);
+                    std::cout << "Saved frame to " << filename << std::endl;
+                }
+            }
             
             frame_count++;
         } else {
