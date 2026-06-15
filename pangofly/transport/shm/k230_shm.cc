@@ -5,6 +5,7 @@
 #include <errno.h>
 
 #include "pangofly/common/log.h"
+#include "pangofly/transport/shm/shm_region.h"
 
 extern "C" {
 static inline long syscall0(int num) {
@@ -64,12 +65,6 @@ namespace pangofly {
 namespace transport {
 
 static const size_t SHM_KEY_BASE = 0x80000000;
-
-#ifndef PANGOFLY_RESERVE_ADDR
-#define PANGOFLY_RESERVE_ADDR   0x120000000ULL
-#endif
-
-static const uint64_t FIXED_VADDR_BASE = PANGOFLY_RESERVE_ADDR;
 static const uint64_t FIXED_VADDR_STEP = 0x200000ULL;
 
 static size_t shm_name_to_key(const std::string& name) {
@@ -81,7 +76,8 @@ static size_t shm_name_to_key(const std::string& name) {
 }
 
 static uint64_t get_fixed_address(uint64_t channel_id) {
-    return FIXED_VADDR_BASE + (channel_id % 100) * FIXED_VADDR_STEP;
+    uint64_t base = ShmRegion::GetReserveAddr();
+    return base + (channel_id % 100) * FIXED_VADDR_STEP;
 }
 
 K230Shm::K230Shm(uint64_t channel_id, std::string channel_name)

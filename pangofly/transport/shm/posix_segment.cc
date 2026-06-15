@@ -7,20 +7,25 @@
 #include <cerrno>
 
 #include "pangofly/common/log.h"
+#include "pangofly/transport/shm/shm_region.h"
 
 namespace pangofly {
 namespace transport {
 
+static const uint64_t FIXED_VADDR_STEP = 0x200000ULL;
+
 PosixSegment::PosixSegment(uint64_t channel_id, std::string channel_name)
     : Segment(channel_id, channel_name) {
   shm_name_ = shm_prefix_ + std::to_string(channel_id);
-  fixed_address_ = 0x100100000ULL + (channel_id % 100) * 0x200000ULL;
+  uint64_t base = ShmRegion::GetReserveAddr();
+  fixed_address_ = base + (channel_id % 100) * FIXED_VADDR_STEP;
 }
 
 PosixSegment::PosixSegment(std::string prefix, uint64_t channel_id, size_t size)
     : Segment(channel_id, size) {
   shm_name_ = prefix + std::to_string(channel_id);
-  fixed_address_ = 0x100100000ULL + (channel_id % 100) * 0x200000ULL;
+  uint64_t base = ShmRegion::GetReserveAddr();
+  fixed_address_ = base + (channel_id % 100) * FIXED_VADDR_STEP;
 }
 
 PosixSegment::~PosixSegment() { PosixSegment::Destroy(); }
