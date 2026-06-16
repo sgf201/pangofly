@@ -46,3 +46,37 @@ target_include_directories(pangofly_nonpod_test PRIVATE
 )
 
 target_link_libraries(pangofly_nonpod_test pangofly pthread rt)
+
+# Face Recognition Demo Nodes
+add_executable(image_capture_node
+  ${PROJECT_SOURCE_DIR}/examples/image_capture_node.cc
+)
+
+target_include_directories(image_capture_node PRIVATE
+  ${PROJECT_SOURCE_DIR}/idl
+  ${PROJECT_SOURCE_DIR}/idl/container
+)
+
+target_link_libraries(image_capture_node pangofly pthread rt)
+
+add_executable(face_recognition_node
+  ${PROJECT_SOURCE_DIR}/examples/face_recognition_node.cc
+)
+
+target_include_directories(face_recognition_node PRIVATE
+  ${PROJECT_SOURCE_DIR}/idl
+  ${PROJECT_SOURCE_DIR}/idl/container
+)
+
+target_link_libraries(face_recognition_node pangofly pthread rt)
+
+add_executable(result_display_node
+  ${PROJECT_SOURCE_DIR}/examples/result_display_node.cc
+)
+
+target_include_directories(result_display_node PRIVATE
+  ${PROJECT_SOURCE_DIR}/idl
+  ${PROJECT_SOURCE_DIR}/idl/container
+)
+
+target_link_libraries(result_display_node pangofly pthread rt)
