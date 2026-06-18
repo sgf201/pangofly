@@ -80,3 +80,50 @@ target_include_directories(result_display_node PRIVATE
 )
 
 target_link_libraries(result_display_node pangofly pthread rt)
+
+# Camera Capture Node (using RKADK for real camera input)
+# This requires RKADK libraries and headers from luckfox_pangofly project
+# Build with: cmake -DRKADK_PATH=/path/to/luckfox_pangofly ..
+
+option(USE_RKADK "Enable RKADK camera capture support" OFF)
+
+if(USE_RKADK)
+  if(NOT DEFINED RKADK_PATH)
+    message(FATAL_ERROR "RKADK_PATH must be set when USE_RKADK is enabled")
+  endif()
+  
+  # RKADK include paths
+  set(RKADK_INCLUDE_DIRS
+    ${RKADK_PATH}/project/app/component/rkadk/rkadk/include
+    ${RKADK_PATH}/project/app/component/rkadk/rkadk/examples/common/isp
+    ${RKADK_PATH}/media/out/include
+    ${RKADK_PATH}/media/isp/release_camera_engine_rkaiq_rv1106_uclibc/include
+  )
+  
+  # RKADK library paths
+  set(RKADK_LIBRARY_DIRS
+    ${RKADK_PATH}/media/out/lib
+    ${RKADK_PATH}/project/app/component/rkadk/out/lib
+  )
+  
+  add_executable(camera_capture_node
+    ${PROJECT_SOURCE_DIR}/examples/camera_capture_node.cc
+  )
+  
+  target_include_directories(camera_capture_node PRIVATE
+    ${PROJECT_SOURCE_DIR}/idl
+    ${PROJECT_SOURCE_DIR}/idl/container
+    ${RKADK_INCLUDE_DIRS}
+  )
+  
+  target_link_libraries(camera_capture_node
+    pangofly
+    pthread
+    rt
+    rkadk
+    rockit
+    rkaiq
+  )
+  
+  message(STATUS "Camera capture node enabled with RKADK support")
+endif()
