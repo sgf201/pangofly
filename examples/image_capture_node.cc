@@ -2,17 +2,54 @@
 #include <memory>
 #include <chrono>
 #include <thread>
+#include <random>
+#include <vector>
+#include <cstring>
 
 #include "pangofly/pangofly.h"
 #include "pangofly/node/node.h"
-#include "idl/container/vector.h"
 
 using namespace pangofly;
-using namespace pangofly::examples;
+
+// Image Frame Structure
+struct ImageFrame {
+    int64_t timestamp;
+    int32_t width;
+    int32_t height;
+    int32_t format;
+    int32_t stride;
+    std::vector<uint8_t> data;
+};
+
+// Face Box Structure
+struct FaceBox {
+    int32_t x;
+    int32_t y;
+    int32_t width;
+    int32_t height;
+    float score;
+    int32_t id;
+};
+
+// Face Landmark Structure
+struct FaceLandmark {
+    int32_t x;
+    int32_t y;
+};
+
+// Face Detection Result Structure
+struct FaceResult {
+    int32_t frame_id;
+    int64_t timestamp;
+    int32_t face_count;
+    std::vector<FaceBox> faces;
+    std::vector<FaceLandmark> landmarks;
+    float processing_time_ms;
+};
 
 class ImageCaptureNode {
 public:
-    ImageCaptureNode() : node_(nullptr), writer_(nullptr) {}
+    ImageCaptureNode() : node_(nullptr), writer_() {}
     
     bool Init() {
         if (!pangofly::Init()) {
@@ -45,12 +82,27 @@ public:
         std::cout << "Starting image capture..." << std::endl;
         
         for (int i = 0; i < frame_count; ++i) {
-            auto frame = CreateSimulatedFrame(i);
+            ImageFrame frame;
+            
+            frame.timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+            frame.width = 640;
+            frame.height = 480;
+            frame.format = 0;
+            frame.stride = 640 * 3;
+            
+            size_t data_size = frame.width * frame.height * 3;
+            frame.data.resize(data_size);
+            
+            for (size_t j = 0; j < data_size; j += 3) {
+                frame.data[j] = static_cast<uint8_t>((i * 10 + j) % 256);
+                frame.data[j + 1] = static_cast<uint8_t>((i * 5 + j * 2) % 256);
+                frame.data[j + 2] = static_cast<uint8_t>((i * 3 + j * 3) % 256);
+            }
             
             if (writer_->Write(frame)) {
                 std::cout << "Frame " << i << " sent: " 
-                          << frame.width() << "x" << frame.height() 
-                          << ", size: " << frame.data().size() << " bytes" << std::endl;
+                          << frame.width << "x" << frame.height 
+                          << ", size: " << frame.data.size() << " bytes" << std::endl;
             } else {
                 std::cerr << "Failed to write frame " << i << std::endl;
             }
@@ -67,30 +119,6 @@ public:
         pangofly::Shutdown();
     }
 
-private:
-    ImageFrame CreateSimulatedFrame(int frame_id) {
-        ImageFrame frame;
-        
-        frame.set_timestamp(std::chrono::system_clock::now().time_since_epoch().count());
-        frame.set_width(640);
-        frame.set_height(480);
-        frame.set_format(0); // BGR format
-        frame.set_stride(640 * 3);
-        
-        size_t data_size = frame.width() * frame.height() * 3;
-        std::vector<uint8_t> data(data_size);
-        
-        for (size_t j = 0; j < data_size; j += 3) {
-            data[j] = (frame_id * 10 + j) % 256;         // B
-            data[j + 1] = (frame_id * 5 + j * 2) % 256;   // G
-            data[j + 2] = (frame_id * 3 + j * 3) % 256;   // R
-        }
-        
-        frame.set_data(std::move(data));
-        
-        return frame;
-    }
-    
 private:
     std::unique_ptr<Node> node_;
     std::shared_ptr<Writer<ImageFrame>> writer_;
