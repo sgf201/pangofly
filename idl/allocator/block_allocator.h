@@ -28,7 +28,7 @@ struct ChannelBlockPool {
     uint64_t magic;
     uint32_t num_blocks;
     uint32_t block_size;
-    BlockHeader* free_list;
+    std::atomic<BlockHeader*> free_list;
     std::atomic<uint32_t> free_count;
     uint8_t padding[40];
 };

@@ -1,0 +1,11 @@
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/pangofly.dir
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/pangofly_test.dir
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/image_capture_node.dir
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/face_recognition_node.dir
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/result_display_node.dir
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/edit_cache.dir
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/rebuild_cache.dir
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/list_install_components.dir
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/install.dir
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/install/local.dir
+/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox/CMakeFiles/install/strip.dir
