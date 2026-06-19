@@ -9,7 +9,9 @@
 
 using namespace pangofly;
 
-// Face Box Structure
+#define MAX_FACES 10
+#define MAX_LANDMARKS_PER_FACE 5
+
 struct FaceBox {
     int32_t x;
     int32_t y;
@@ -19,20 +21,18 @@ struct FaceBox {
     int32_t id;
 };
 
-// Face Landmark Structure
 struct FaceLandmark {
     int32_t x;
     int32_t y;
 };
 
-// Face Detection Result Structure
 struct FaceResult {
     int32_t frame_id;
     int64_t timestamp;
     int32_t face_count;
-    Vector<FaceBox> faces;
-    Vector<FaceLandmark> landmarks;
     float processing_time_ms;
+    FaceBox faces[MAX_FACES];
+    FaceLandmark landmarks[MAX_FACES * MAX_LANDMARKS_PER_FACE];
 };
 
 class ResultDisplayNode {
@@ -92,27 +92,28 @@ private:
         total_faces_ += result.face_count;
         total_processing_time_ += result.processing_time_ms;
         
-        std::cout << "\n==========================================" << std::endl;
-        std::cout << "Frame ID: " << result.frame_id << std::endl;
-        std::cout << "Timestamp: " << result.timestamp << std::endl;
-        std::cout << "Processing Time: " << result.processing_time_ms << "ms" << std::endl;
-        std::cout << "Faces Detected: " << result.face_count << std::endl;
+        std::cout << "\n[ResultDisplay] ==========================================" << std::endl;
+        std::cout << "[ResultDisplay] Frame ID: " << result.frame_id << std::endl;
+        std::cout << "[ResultDisplay] Timestamp: " << result.timestamp << std::endl;
+        std::cout << "[ResultDisplay] Processing Time: " << result.processing_time_ms << "ms" << std::endl;
+        std::cout << "[ResultDisplay] Faces Detected: " << result.face_count << std::endl;
         
         if (result.face_count > 0) {
-            std::cout << "------------------------------------------" << std::endl;
-            std::cout << "Face Results:" << std::endl;
+            std::cout << "[ResultDisplay] ------------------------------------------" << std::endl;
+            std::cout << "[ResultDisplay] Face Results:" << std::endl;
             
-            for (const auto& face : result.faces) {
-                std::cout << "\nFace ID: " << face.id << std::endl;
-                std::cout << "  Confidence: " << (face.score * 100) << "%" << std::endl;
-                std::cout << "  Bounding Box: (" << face.x << ", " << face.y << ") "
+            for (int i = 0; i < result.face_count; ++i) {
+                const FaceBox& face = result.faces[i];
+                std::cout << "\n[ResultDisplay] Face ID: " << face.id << std::endl;
+                std::cout << "[ResultDisplay]   Confidence: " << (face.score * 100) << "%" << std::endl;
+                std::cout << "[ResultDisplay]   Bounding Box: (" << face.x << ", " << face.y << ") "
                           << "Width: " << face.width << ", Height: " << face.height << std::endl;
             }
             
-            std::cout << "\nLandmarks Count: " << result.landmarks.size() << std::endl;
+            std::cout << "\n[ResultDisplay] Landmarks Count: " << result.face_count * MAX_LANDMARKS_PER_FACE << std::endl;
         }
         
-        std::cout << "==========================================" << std::endl;
+        std::cout << "[ResultDisplay] ==========================================" << std::endl;
     }
     
     void PrintStatistics() {

@@ -20,6 +20,10 @@ bool Node::DeleteReader(const std::string& channel_name) {
 }
 
 void Node::Observe() {
+  std::lock_guard<std::mutex> lg(readers_mutex_);
+  for (auto& pair : readers_) {
+    pair.second->Observe();
+  }
 }
 
 void Node::ClearData() {

@@ -60,6 +60,9 @@ void ShmRegion::LoadConfig() {
 
   uint64_t addr = ReadFromEnv("PANGOFLY_RESERVE_ADDR", 0);
   if (addr == 0) {
+    addr = ReadFromSysfs("/sys/module/pangofly_mmap/parameters/reserve_addr", 0);
+  }
+  if (addr == 0) {
     addr = ReadFromSysfs("/sys/module/pangofly/parameters/reserve_addr", 0);
   }
   if (addr == 0) {
@@ -67,6 +70,9 @@ void ShmRegion::LoadConfig() {
   }
 
   uint64_t size = ReadFromEnv("PANGOFLY_RESERVE_SIZE", 0);
+  if (size == 0) {
+    size = ReadFromSysfs("/sys/module/pangofly_mmap/parameters/reserve_size", 0);
+  }
   if (size == 0) {
     size = ReadFromSysfs("/sys/module/pangofly/parameters/reserve_size", 0);
   }

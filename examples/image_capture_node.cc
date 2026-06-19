@@ -3,22 +3,24 @@
 #include <chrono>
 #include <thread>
 #include <random>
-#include <vector>
 #include <cstring>
 
 #include "pangofly/pangofly.h"
 #include "pangofly/node/node.h"
+#include "idl/container/vector.h"
 
 using namespace pangofly;
 
-// Image Frame Structure
+#define MAX_IMAGE_SIZE (640 * 480 * 3)
+
 struct ImageFrame {
     int64_t timestamp;
     int32_t width;
     int32_t height;
     int32_t format;
     int32_t stride;
-    std::vector<uint8_t> data;
+    int32_t data_size;
+    uint8_t data[MAX_IMAGE_SIZE];
 };
 
 // Face Box Structure
@@ -42,8 +44,8 @@ struct FaceResult {
     int32_t frame_id;
     int64_t timestamp;
     int32_t face_count;
-    std::vector<FaceBox> faces;
-    std::vector<FaceLandmark> landmarks;
+    Vector<FaceBox> faces;
+    Vector<FaceLandmark> landmarks;
     float processing_time_ms;
 };
 
@@ -89,11 +91,9 @@ public:
             frame.height = 480;
             frame.format = 0;
             frame.stride = 640 * 3;
+            frame.data_size = frame.width * frame.height * 3;
             
-            size_t data_size = frame.width * frame.height * 3;
-            frame.data.resize(data_size);
-            
-            for (size_t j = 0; j < data_size; j += 3) {
+            for (size_t j = 0; j < frame.data_size; j += 3) {
                 frame.data[j] = static_cast<uint8_t>((i * 10 + j) % 256);
                 frame.data[j + 1] = static_cast<uint8_t>((i * 5 + j * 2) % 256);
                 frame.data[j + 2] = static_cast<uint8_t>((i * 3 + j * 3) % 256);
@@ -102,7 +102,7 @@ public:
             if (writer_->Write(frame)) {
                 std::cout << "Frame " << i << " sent: " 
                           << frame.width << "x" << frame.height 
-                          << ", size: " << frame.data.size() << " bytes" << std::endl;
+                          << ", size: " << frame.data_size << " bytes" << std::endl;
             } else {
                 std::cerr << "Failed to write frame " << i << std::endl;
             }

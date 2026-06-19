@@ -143,8 +143,8 @@ FaceResult face_result;
 
 1. Ensure Pangofly kernel module is loaded with correct reserved region:
    ```bash
-   cat /sys/module/pangofly/parameters/reserve_addr
-   cat /sys/module/pangofly/parameters/reserve_size
+   cat /sys/module/pangofly_mmap/parameters/reserve_addr
+   cat /sys/module/pangofly_mmap/parameters/reserve_size
    ```
 
 2. For cross-compilation, use the toolchain from luckfox_pangofly:

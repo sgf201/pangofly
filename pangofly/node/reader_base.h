@@ -15,6 +15,7 @@ class ReaderBase {
 public:
   virtual ~ReaderBase() = default;
   virtual const std::string& ChannelName() const = 0;
+  virtual void Observe() {}
 };
 
 template <typename MessageT>
@@ -53,6 +54,26 @@ public:
 
     segment_->ReleaseReadBlock(block);
     return true;
+  }
+
+  void Observe() override {
+    if (!callback_) {
+      return;
+    }
+    
+    transport::ReadableBlock block;
+    if (!segment_->AcquireBlockToRead(&block)) {
+      return;
+    }
+
+    if (block.buf != nullptr && block.block != nullptr) {
+      const MessageT& message = *reinterpret_cast<const MessageT*>(block.buf);
+      MessageInfo info;
+      info.seq = block.block->sequence();
+      callback_(message, info);
+    }
+
+    segment_->ReleaseReadBlock(block);
   }
 
   const std::string& ChannelName() const override {

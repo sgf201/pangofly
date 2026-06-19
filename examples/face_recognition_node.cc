@@ -10,14 +10,16 @@
 
 using namespace pangofly;
 
-// Image Frame Structure (matching IDL definition)
+#define MAX_IMAGE_SIZE (640 * 480 * 3)
+
 struct ImageFrame {
     int64_t timestamp;
     int32_t width;
     int32_t height;
     int32_t format;
     int32_t stride;
-    Vector<uint8_t> data;
+    int32_t data_size;
+    uint8_t data[MAX_IMAGE_SIZE];
 };
 
 // Face Box Structure
@@ -36,14 +38,16 @@ struct FaceLandmark {
     int32_t y;
 };
 
-// Face Detection Result Structure
+#define MAX_FACES 10
+#define MAX_LANDMARKS_PER_FACE 5
+
 struct FaceResult {
     int32_t frame_id;
     int64_t timestamp;
     int32_t face_count;
-    Vector<FaceBox> faces;
-    Vector<FaceLandmark> landmarks;
     float processing_time_ms;
+    FaceBox faces[MAX_FACES];
+    FaceLandmark landmarks[MAX_FACES * MAX_LANDMARKS_PER_FACE];
 };
 
 class FaceRecognitionNode {
@@ -107,8 +111,9 @@ private:
     void OnImageReceived(const ImageFrame& frame) {
         auto start = std::chrono::high_resolution_clock::now();
         
-        std::cout << "\nReceived frame: " 
+        std::cout << "\n[FaceRecognition] Received frame: " 
                   << frame.width << "x" << frame.height 
+                  << ", data_size: " << frame.data_size
                   << ", timestamp: " << frame.timestamp << std::endl;
         
         FaceResult result = PerformFaceDetection(frame);
@@ -120,17 +125,18 @@ private:
         result.timestamp = frame.timestamp;
         
         if (writer_->Write(result)) {
-            std::cout << "Face detection completed in " << duration.count() << "ms" << std::endl;
-            std::cout << "Detected " << result.face_count << " faces" << std::endl;
+            std::cout << "[FaceRecognition] Detection completed in " << duration.count() << "ms" << std::endl;
+            std::cout << "[FaceRecognition] Detected " << result.face_count << " faces" << std::endl;
             
-            for (const auto& face : result.faces) {
-                std::cout << "  Face ID: " << face.id 
+            for (int i = 0; i < result.face_count; ++i) {
+                const FaceBox& face = result.faces[i];
+                std::cout << "[FaceRecognition]   Face ID: " << face.id 
                           << ", Score: " << face.score
                           << ", Box: (" << face.x << "," << face.y << ")-(" 
                           << face.x + face.width << "," << face.y + face.height << ")" << std::endl;
             }
         } else {
-            std::cerr << "Failed to send face result" << std::endl;
+            std::cerr << "[FaceRecognition] Failed to send face result" << std::endl;
         }
     }
     
@@ -140,7 +146,7 @@ private:
         result.frame_id = frame_id_++;
         result.face_count = simulate_random_faces();
         
-        for (int i = 0; i < result.face_count; ++i) {
+        for (int i = 0; i < result.face_count && i < MAX_FACES; ++i) {
             FaceBox face;
             face.id = i + 1;
             face.score = static_cast<float>(0.8 + (std::rand() % 20) / 100.0);
@@ -151,13 +157,13 @@ private:
             face.width = 60 + std::rand() % 80;
             face.height = 60 + std::rand() % 80;
             
-            result.faces.emplace_back(face);
+            result.faces[i] = face;
             
-            for (int j = 0; j < 5; ++j) {
+            for (int j = 0; j < MAX_LANDMARKS_PER_FACE; ++j) {
                 FaceLandmark landmark;
                 landmark.x = face.x + std::rand() % face.width;
                 landmark.y = face.y + std::rand() % face.height;
-                result.landmarks.emplace_back(landmark);
+                result.landmarks[i * MAX_LANDMARKS_PER_FACE + j] = landmark;
             }
         }
         
