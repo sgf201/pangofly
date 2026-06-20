@@ -22,7 +22,7 @@ set(USE_LUCKFOX_SHM OFF)
 if(PANGOFLY_PLATFORM STREQUAL "k230")
   set(USE_K230_SHM ON)
 elseif(PANGOFLY_PLATFORM STREQUAL "luckfox")
-  set(USE_POSIX_SHM ON)
+  set(USE_LUCKFOX_SHM ON)
 else()
   set(USE_POSIX_SHM ON)
 endif()
@@ -50,12 +50,14 @@ else()
   list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*k230_shm\\.cc$")
 endif()
 
-# Exclude non-library files
+# Exclude non-library files from pangofly library sources
 list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*nonpod_writer\\.cc$")
 list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*nonpod_reader\\.cc$")
 list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*writer\\.cc$")
 list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*reader\\.cc$")
 list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*shm_example\\.cc$")
+list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*nonpod_shm_example\\.cc$")
+list(FILTER PANGOFLY_SRCS EXCLUDE REGEX ".*nonpod_example\\.cc$")
 
 # Build shared library
 add_library(pangofly SHARED ${PANGOFLY_SRCS})
@@ -70,41 +72,19 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/pangofly/ DESTINATION include/pangofly F
 option(BUILD_EXAMPLES "Build example programs" ON)
 
 if(BUILD_EXAMPLES)
-  # Basic test
-  add_executable(pangofly_test
-    ${PROJECT_SOURCE_DIR}/pangofly/examples/shm_example.cc
-  )
-  target_link_libraries(pangofly_test pangofly pthread rt)
-
-  # Image capture node
-  add_executable(image_capture_node
-    ${PROJECT_SOURCE_DIR}/examples/image_capture_node.cc
-  )
-  target_link_libraries(image_capture_node pangofly pthread rt)
-
-  # Face recognition node
-  add_executable(face_recognition_node
-    ${PROJECT_SOURCE_DIR}/examples/face_recognition_node.cc
-  )
-  target_link_libraries(face_recognition_node pangofly pthread rt)
-
-  # Result display node
-  add_executable(result_display_node
-    ${PROJECT_SOURCE_DIR}/examples/result_display_node.cc
-  )
-  target_link_libraries(result_display_node pangofly pthread rt)
-
-  # Camera capture node (requires RKADK - build with USE_RKADK=ON)
-  if(USE_RKADK)
-    add_executable(camera_capture_node
-      ${PROJECT_SOURCE_DIR}/examples/camera_capture_node.cc
-    )
-    target_link_libraries(camera_capture_node pangofly pthread rt rockit rkaiq)
+  # Common examples (all platforms)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/examples/common/shm_example)
+  
+  # Platform-specific examples
+  if(PANGOFLY_PLATFORM STREQUAL "luckfox")
+    # Face recognition demo (contains all luckfox demo nodes)
+    add_subdirectory(${PROJECT_SOURCE_DIR}/examples/luckfox/face_recognition)
   endif()
 endif()
 
 message(STATUS "Pangofly build configuration:")
 message(STATUS "  Platform: ${PANGOFLY_PLATFORM}")
 message(STATUS "  K230 Shm: ${USE_K230_SHM}")
+message(STATUS "  Luckfox Shm: ${USE_LUCKFOX_SHM}")
 message(STATUS "  Posix Shm: ${USE_POSIX_SHM}")
 message(STATUS "  RKADK Support: ${USE_RKADK}")
