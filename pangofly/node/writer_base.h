@@ -38,19 +38,7 @@ public:
   }
 
   bool Write(const MessageT& message, const MessageInfo& message_info) override {
-    size_t total_size = sizeof(MessageT);
-    
-    const auto* msg_ptr = &message;
-    const uint8_t* data_ptr = reinterpret_cast<const uint8_t*>(msg_ptr);
-    size_t struct_size = sizeof(MessageT);
-    
-    for (size_t i = 0; i < struct_size; i += sizeof(uintptr_t)) {
-        uintptr_t maybe_ptr = *reinterpret_cast<const uintptr_t*>(data_ptr + i);
-        if (maybe_ptr != 0) {
-            const Vector<uint8_t>* vec = reinterpret_cast<const Vector<uint8_t>*>(data_ptr + i);
-            total_size += vec->size() * sizeof(uint8_t);
-        }
-    }
+    size_t total_size = calculate_message_size(message);
     
     transport::WritableBlock block;
     if (!segment_->AcquireBlockToWrite(total_size, &block)) {
@@ -72,6 +60,23 @@ public:
   }
 
 private:
+  size_t calculate_message_size(const MessageT& message) {
+    size_t total_size = sizeof(MessageT);
+    
+    const uint8_t* data_ptr = reinterpret_cast<const uint8_t*>(&message);
+    size_t struct_size = sizeof(MessageT);
+    
+    for (size_t i = 0; i < struct_size; i += sizeof(uintptr_t)) {
+      uintptr_t maybe_ptr = *reinterpret_cast<const uintptr_t*>(data_ptr + i);
+      if (maybe_ptr != 0) {
+        const Vector<uint8_t>* vec = reinterpret_cast<const Vector<uint8_t>*>(data_ptr + i);
+        total_size += vec->size() * sizeof(uint8_t);
+      }
+    }
+    
+    return total_size;
+  }
+
   std::string channel_name_;
   std::shared_ptr<PANGOFLY_SEGMENT_TYPE> segment_;
 };

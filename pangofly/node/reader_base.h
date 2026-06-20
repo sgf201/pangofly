@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <string>
+#include <functional>
 
 #include "pangofly/node/reader.h"
 
@@ -21,6 +22,8 @@ public:
 template <typename MessageT>
 class ShmReader : public Reader<MessageT>, public ReaderBase {
 public:
+  using MessagePtr = std::unique_ptr<MessageT, std::function<void(MessageT*)>>;
+
   explicit ShmReader(const std::string& channel_name) 
       : channel_name_(channel_name),
         segment_(std::make_shared<PANGOFLY_SEGMENT_TYPE>(
@@ -56,6 +59,26 @@ public:
     return true;
   }
 
+  MessagePtr ReadWithAllocator() {
+    transport::ReadableBlock block;
+    if (!segment_->AcquireBlockToRead(&block)) {
+      return nullptr;
+    }
+
+    if (block.buf == nullptr || block.block == nullptr) {
+      segment_->ReleaseReadBlock(block);
+      return nullptr;
+    }
+
+    MessageT* msg = reinterpret_cast<MessageT*>(block.buf);
+    
+    auto deleter = [this, block](MessageT*) mutable {
+      segment_->ReleaseReadBlock(block);
+    };
+
+    return MessagePtr(msg, deleter);
+  }
+
   void Observe() override {
     if (!callback_) {
       return;
@@ -74,6 +97,21 @@ public:
     }
 
     segment_->ReleaseReadBlock(block);
+  }
+
+  void ObserveWithAllocator() {
+    if (!callback_) {
+      return;
+    }
+
+    MessagePtr msg = ReadWithAllocator();
+    if (!msg) {
+      return;
+    }
+
+    MessageInfo info;
+    info.seq = 0;
+    callback_(*msg, info);
   }
 
   const std::string& ChannelName() const override {

@@ -109,6 +109,12 @@ public:
         return reinterpret_cast<BlockAllocator*>(allocator_.get_block_allocator()); 
     }
 
+    void set_block_allocator(BlockAllocator* block_allocator) {
+        allocator_ = Allocator(reinterpret_cast<typename Allocator::pointer>(block_allocator));
+    }
+
+    void copy_from_shm(const Vector& other, BlockAllocator* allocator);
+
 private:
     T* data_;
     size_type size_;
@@ -542,6 +548,19 @@ void Vector<T, Allocator>::copy_data(const Vector& other) {
         new (data_ + i) T(other.data_[i]);
     }
     size_ = other.size_;
+}
+
+template<typename T, typename Allocator>
+void Vector<T, Allocator>::copy_from_shm(const Vector& other, BlockAllocator* allocator) {
+    clear();
+    if (other.empty()) return;
+    
+    set_block_allocator(allocator);
+    reserve(other.size_);
+    
+    for (size_type i = 0; i < other.size_; ++i) {
+        push_back(other.data_[i]);
+    }
 }
 
 } // namespace pangofly

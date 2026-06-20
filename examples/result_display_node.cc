@@ -9,9 +9,6 @@
 
 using namespace pangofly;
 
-#define MAX_FACES 10
-#define MAX_LANDMARKS_PER_FACE 5
-
 struct FaceBox {
     int32_t x;
     int32_t y;
@@ -31,8 +28,8 @@ struct FaceResult {
     int64_t timestamp;
     int32_t face_count;
     float processing_time_ms;
-    FaceBox faces[MAX_FACES];
-    FaceLandmark landmarks[MAX_FACES * MAX_LANDMARKS_PER_FACE];
+    Vector<FaceBox> faces;
+    Vector<FaceLandmark> landmarks;
 };
 
 class ResultDisplayNode {
@@ -110,7 +107,7 @@ private:
                           << "Width: " << face.width << ", Height: " << face.height << std::endl;
             }
             
-            std::cout << "\n[ResultDisplay] Landmarks Count: " << result.face_count * MAX_LANDMARKS_PER_FACE << std::endl;
+            std::cout << "\n[ResultDisplay] Landmarks Count: " << result.landmarks.size() << std::endl;
         }
         
         std::cout << "[ResultDisplay] ==========================================" << std::endl;
@@ -138,7 +135,6 @@ private:
     std::shared_ptr<Reader<FaceResult>> reader_;
     bool running_ = true;
     
-    // Statistics
     int total_frames_ = 0;
     int total_faces_ = 0;
     float total_processing_time_ = 0.0f;

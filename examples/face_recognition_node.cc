@@ -10,8 +10,6 @@
 
 using namespace pangofly;
 
-#define MAX_IMAGE_SIZE (640 * 480 * 3)
-
 struct ImageFrame {
     int64_t timestamp;
     int32_t width;
@@ -19,10 +17,9 @@ struct ImageFrame {
     int32_t format;
     int32_t stride;
     int32_t data_size;
-    uint8_t data[MAX_IMAGE_SIZE];
+    Vector<uint8_t> data;
 };
 
-// Face Box Structure
 struct FaceBox {
     int32_t x;
     int32_t y;
@@ -32,22 +29,18 @@ struct FaceBox {
     int32_t id;
 };
 
-// Face Landmark Structure
 struct FaceLandmark {
     int32_t x;
     int32_t y;
 };
-
-#define MAX_FACES 10
-#define MAX_LANDMARKS_PER_FACE 5
 
 struct FaceResult {
     int32_t frame_id;
     int64_t timestamp;
     int32_t face_count;
     float processing_time_ms;
-    FaceBox faces[MAX_FACES];
-    FaceLandmark landmarks[MAX_FACES * MAX_LANDMARKS_PER_FACE];
+    Vector<FaceBox> faces;
+    Vector<FaceLandmark> landmarks;
 };
 
 class FaceRecognitionNode {
@@ -146,7 +139,10 @@ private:
         result.frame_id = frame_id_++;
         result.face_count = simulate_random_faces();
         
-        for (int i = 0; i < result.face_count && i < MAX_FACES; ++i) {
+        result.faces.resize(result.face_count);
+        result.landmarks.resize(result.face_count * 5);
+        
+        for (int i = 0; i < result.face_count; ++i) {
             FaceBox face;
             face.id = i + 1;
             face.score = static_cast<float>(0.8 + (std::rand() % 20) / 100.0);
@@ -159,11 +155,11 @@ private:
             
             result.faces[i] = face;
             
-            for (int j = 0; j < MAX_LANDMARKS_PER_FACE; ++j) {
+            for (int j = 0; j < 5; ++j) {
                 FaceLandmark landmark;
                 landmark.x = face.x + std::rand() % face.width;
                 landmark.y = face.y + std::rand() % face.height;
-                result.landmarks[i * MAX_LANDMARKS_PER_FACE + j] = landmark;
+                result.landmarks[i * 5 + j] = landmark;
             }
         }
         

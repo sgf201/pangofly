@@ -7,6 +7,7 @@
 
 #include "pangofly/pangofly.h"
 #include "pangofly/node/node.h"
+#include "idl/container/vector.h"
 
 using namespace pangofly;
 
@@ -19,10 +20,9 @@ struct ImageFrame {
     int32_t format;
     int32_t stride;
     int32_t data_size;
-    uint8_t data[MAX_IMAGE_SIZE];
+    Vector<uint8_t> data;
 };
 
-// Face Box Structure
 struct FaceBox {
     int32_t x;
     int32_t y;
@@ -32,23 +32,18 @@ struct FaceBox {
     int32_t id;
 };
 
-// Face Landmark Structure
 struct FaceLandmark {
     int32_t x;
     int32_t y;
 };
 
-#define MAX_FACES 10
-#define MAX_LANDMARKS_PER_FACE 5
-
-// Face Detection Result Structure
 struct FaceResult {
     int32_t frame_id;
     int64_t timestamp;
     int32_t face_count;
     float processing_time_ms;
-    FaceBox faces[MAX_FACES];
-    FaceLandmark landmarks[MAX_FACES * MAX_LANDMARKS_PER_FACE];
+    Vector<FaceBox> faces;
+    Vector<FaceLandmark> landmarks;
 };
 
 class ImageCaptureNode {
@@ -95,6 +90,7 @@ public:
             frame.stride = 640 * 3;
             frame.data_size = frame.width * frame.height * 3;
             
+            frame.data.resize(frame.data_size);
             for (size_t j = 0; j < frame.data_size; j += 3) {
                 frame.data[j] = static_cast<uint8_t>((i * 10 + j) % 256);
                 frame.data[j + 1] = static_cast<uint8_t>((i * 5 + j * 2) % 256);
