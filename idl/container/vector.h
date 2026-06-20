@@ -30,12 +30,14 @@ public:
     explicit Vector(BlockAllocator* block_allocator);
     explicit Vector(size_type count, const T& value = T{});
     Vector(size_type count, const T& value, BlockAllocator* block_allocator);
-    
+
     Vector(const Vector& other);
     Vector(Vector&& other) noexcept;
-    
+
     Vector(std::initializer_list<T> init);
-    
+
+    Vector(T* data, size_type size);
+
     ~Vector();
 
     Vector& operator=(const Vector& other);
@@ -170,6 +172,11 @@ Vector<T, Allocator>::Vector(std::initializer_list<T> init)
     for (const auto& elem : init) {
         push_back(elem);
     }
+}
+
+template<typename T, typename Allocator>
+Vector<T, Allocator>::Vector(T* data, size_type size)
+    : data_(data), size_(size), capacity_(size), allocator_() {
 }
 
 template<typename T, typename Allocator>
