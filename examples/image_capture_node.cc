@@ -7,7 +7,6 @@
 
 #include "pangofly/pangofly.h"
 #include "pangofly/node/node.h"
-#include "idl/container/vector.h"
 
 using namespace pangofly;
 
@@ -39,14 +38,17 @@ struct FaceLandmark {
     int32_t y;
 };
 
+#define MAX_FACES 10
+#define MAX_LANDMARKS_PER_FACE 5
+
 // Face Detection Result Structure
 struct FaceResult {
     int32_t frame_id;
     int64_t timestamp;
     int32_t face_count;
-    Vector<FaceBox> faces;
-    Vector<FaceLandmark> landmarks;
     float processing_time_ms;
+    FaceBox faces[MAX_FACES];
+    FaceLandmark landmarks[MAX_FACES * MAX_LANDMARKS_PER_FACE];
 };
 
 class ImageCaptureNode {

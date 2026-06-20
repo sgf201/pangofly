@@ -25,7 +25,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 set(CMAKE_SKIP_RPATH TRUE)
 
 # Specify sysroot if needed
-set(SYSROOT_PATH /home/sgf/ws/luckfox_pangofly/sysdrvroot)
+set(SYSROOT_PATH ${TOOLCHAIN_PATH}/arm-rockchip830-linux-uclibcgnueabihf/sysroot)
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --sysroot=${SYSROOT_PATH} -muclibc -O2")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --sysroot=${SYSROOT_PATH} -muclibc -O2 -std=c++17")
