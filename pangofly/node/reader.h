@@ -22,11 +22,14 @@ template <typename MessageT>
 class Reader {
 public:
   virtual ~Reader() = default;
-  
+
   virtual bool Init() = 0;
   virtual void SetCallback(const CallbackFunc<MessageT>& callback) = 0;
   virtual bool Read(MessageT* message, MessageInfo* message_info) = 0;
-  
+
+  virtual const MessageT* ReadLatest() = 0;
+  virtual void ReleaseLatest() = 0;
+
   virtual const std::string& ChannelName() const = 0;
 };
 

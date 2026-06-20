@@ -1,0 +1,42 @@
+// Face Detection IDL Definition
+// This file defines the message types for face detection demo
+
+module FaceDetection {
+
+    // Image frame message
+    struct ImageFrame {
+        int64 timestamp;
+        int32 width;
+        int32 height;
+        int32 format;      // 0=RGB, 1=BGR, 2=GRAY
+        int32 stride;
+        sequence<uint8> data;
+    };
+
+    // Single face bounding box
+    struct FaceBox {
+        int32 x;
+        int32 y;
+        int32 width;
+        int32 height;
+        float score;
+        int32 id;
+    };
+
+    // Face landmark point
+    struct FaceLandmark {
+        int32 x;
+        int32 y;
+    };
+
+    // Face detection result
+    struct FaceResult {
+        int32 frame_id;
+        int64 timestamp;
+        int32 face_count;
+        float processing_time_ms;
+        sequence<FaceBox> faces;
+        sequence<FaceLandmark> landmarks;
+    };
+
+};

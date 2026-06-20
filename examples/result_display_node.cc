@@ -5,32 +5,10 @@
 
 #include "pangofly/pangofly.h"
 #include "pangofly/node/node.h"
-#include "idl/container/vector.h"
+#include "idl/generated/face_detection.h"
 
 using namespace pangofly;
-
-struct FaceBox {
-    int32_t x;
-    int32_t y;
-    int32_t width;
-    int32_t height;
-    float score;
-    int32_t id;
-};
-
-struct FaceLandmark {
-    int32_t x;
-    int32_t y;
-};
-
-struct FaceResult {
-    int32_t frame_id;
-    int64_t timestamp;
-    int32_t face_count;
-    float processing_time_ms;
-    Vector<FaceBox> faces;
-    Vector<FaceLandmark> landmarks;
-};
+using namespace FaceDetection;
 
 class ResultDisplayNode {
 public:

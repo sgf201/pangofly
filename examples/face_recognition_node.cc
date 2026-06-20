@@ -6,42 +6,10 @@
 
 #include "pangofly/pangofly.h"
 #include "pangofly/node/node.h"
-#include "idl/container/vector.h"
+#include "idl/generated/face_detection.h"
 
 using namespace pangofly;
-
-struct ImageFrame {
-    int64_t timestamp;
-    int32_t width;
-    int32_t height;
-    int32_t format;
-    int32_t stride;
-    int32_t data_size;
-    Vector<uint8_t> data;
-};
-
-struct FaceBox {
-    int32_t x;
-    int32_t y;
-    int32_t width;
-    int32_t height;
-    float score;
-    int32_t id;
-};
-
-struct FaceLandmark {
-    int32_t x;
-    int32_t y;
-};
-
-struct FaceResult {
-    int32_t frame_id;
-    int64_t timestamp;
-    int32_t face_count;
-    float processing_time_ms;
-    Vector<FaceBox> faces;
-    Vector<FaceLandmark> landmarks;
-};
+using namespace FaceDetection;
 
 class FaceRecognitionNode {
 public:
@@ -103,69 +71,71 @@ public:
 private:
     void OnImageReceived(const ImageFrame& frame) {
         auto start = std::chrono::high_resolution_clock::now();
-        
-        std::cout << "\n[FaceRecognition] Received frame: " 
-                  << frame.width << "x" << frame.height 
-                  << ", data_size: " << frame.data_size
+
+        std::cout << "\n[FaceRecognition] Received frame: "
+                  << frame.width << "x" << frame.height
+                  << ", data_size: " << frame.data.size()
                   << ", timestamp: " << frame.timestamp << std::endl;
-        
-        FaceResult result = PerformFaceDetection(frame);
-        
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        
-        result.processing_time_ms = static_cast<float>(duration.count());
-        result.timestamp = frame.timestamp;
-        
-        if (writer_->Write(result)) {
-            std::cout << "[FaceRecognition] Detection completed in " << duration.count() << "ms" << std::endl;
-            std::cout << "[FaceRecognition] Detected " << result.face_count << " faces" << std::endl;
-            
-            for (int i = 0; i < result.face_count; ++i) {
-                const FaceBox& face = result.faces[i];
-                std::cout << "[FaceRecognition]   Face ID: " << face.id 
-                          << ", Score: " << face.score
-                          << ", Box: (" << face.x << "," << face.y << ")-(" 
-                          << face.x + face.width << "," << face.y + face.height << ")" << std::endl;
-            }
-        } else {
-            std::cerr << "[FaceRecognition] Failed to send face result" << std::endl;
+
+        int32_t face_count = simulate_random_faces();
+
+        Sample<FaceResult> sample = writer_->LoanSample(sizeof(FaceResult) + face_count * sizeof(FaceBox) + face_count * 5 * sizeof(FaceLandmark));
+        if (!sample.IsValid()) {
+            std::cerr << "[FaceRecognition] Failed to loan sample" << std::endl;
+            return;
         }
-    }
-    
-    FaceResult PerformFaceDetection(const ImageFrame& frame) {
-        FaceResult result;
-        
-        result.frame_id = frame_id_++;
-        result.face_count = simulate_random_faces();
-        
-        result.faces.resize(result.face_count);
-        result.landmarks.resize(result.face_count * 5);
-        
-        for (int i = 0; i < result.face_count; ++i) {
+
+        FaceResult* result = sample.message;
+        result->frame_id = frame_id_++;
+        result->face_count = face_count;
+
+        result->faces.resize(face_count);
+        result->landmarks.resize(face_count * 5);
+
+        for (int i = 0; i < face_count; ++i) {
             FaceBox face;
             face.id = i + 1;
             face.score = static_cast<float>(0.8 + (std::rand() % 20) / 100.0);
-            
+
             int margin = 50;
             face.x = margin + std::rand() % (frame.width - margin * 2 - 100);
             face.y = margin + std::rand() % (frame.height - margin * 2 - 100);
             face.width = 60 + std::rand() % 80;
             face.height = 60 + std::rand() % 80;
-            
-            result.faces[i] = face;
-            
+
+            result->faces[i] = face;
+
             for (int j = 0; j < 5; ++j) {
                 FaceLandmark landmark;
                 landmark.x = face.x + std::rand() % face.width;
                 landmark.y = face.y + std::rand() % face.height;
-                result.landmarks[i * 5 + j] = landmark;
+                result->landmarks[i * 5 + j] = landmark;
             }
         }
-        
-        return result;
+
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+
+        result->processing_time_ms = static_cast<float>(duration.count());
+        result->timestamp = frame.timestamp;
+
+        if (writer_->Write(sample)) {
+            std::cout << "[FaceRecognition] Detection completed in " << duration.count() << "ms" << std::endl;
+            std::cout << "[FaceRecognition] Detected " << result->face_count << " faces" << std::endl;
+
+            for (int i = 0; i < result->face_count; ++i) {
+                const FaceBox& face = result->faces[i];
+                std::cout << "[FaceRecognition]   Face ID: " << face.id
+                          << ", Score: " << face.score
+                          << ", Box: (" << face.x << "," << face.y << ")-("
+                          << face.x + face.width << "," << face.y + face.height << ")" << std::endl;
+            }
+        } else {
+            std::cerr << "[FaceRecognition] Failed to send face result" << std::endl;
+            writer_->Release(sample);
+        }
     }
-    
+
     int simulate_random_faces() {
         static std::random_device rd;
         static std::mt19937 gen(rd());

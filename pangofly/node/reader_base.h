@@ -32,7 +32,11 @@ public:
     segment_->OpenOrCreate(open_only);
   }
 
-  ~ShmReader() override = default;
+  ~ShmReader() override {
+    if (latest_block_.buf != nullptr) {
+      segment_->ReleaseReadBlock(latest_block_);
+    }
+  }
 
   bool Init() override {
     return true;
@@ -57,6 +61,32 @@ public:
 
     segment_->ReleaseReadBlock(block);
     return true;
+  }
+
+  const MessageT* ReadLatest() override {
+    if (latest_block_.buf != nullptr) {
+      segment_->ReleaseReadBlock(latest_block_);
+      latest_block_.buf = nullptr;
+      latest_block_.block = nullptr;
+    }
+
+    if (!segment_->AcquireBlockToRead(&latest_block_)) {
+      return nullptr;
+    }
+
+    if (latest_block_.buf == nullptr || latest_block_.block == nullptr) {
+      return nullptr;
+    }
+
+    return reinterpret_cast<const MessageT*>(latest_block_.buf);
+  }
+
+  void ReleaseLatest() override {
+    if (latest_block_.buf != nullptr) {
+      segment_->ReleaseReadBlock(latest_block_);
+      latest_block_.buf = nullptr;
+      latest_block_.block = nullptr;
+    }
   }
 
   MessagePtr ReadWithAllocator() {
@@ -122,6 +152,7 @@ private:
   std::string channel_name_;
   std::shared_ptr<PANGOFLY_SEGMENT_TYPE> segment_;
   CallbackFunc<MessageT> callback_;
+  transport::ReadableBlock latest_block_;
 };
 
 } // namespace pangofly

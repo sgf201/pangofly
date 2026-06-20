@@ -35,16 +35,33 @@ struct ChannelBlockPool {
 
 class BlockAllocator {
 public:
-    BlockAllocator() : pool_(nullptr), block_size_(0) {}
-    
+    BlockAllocator() : pool_(nullptr), block_size_(0), buffer_(nullptr), buffer_size_(0) {}
+
     void initialize(ChannelBlockPool* pool) {
         pool_ = pool;
         block_size_ = pool->block_size;
     }
-    
+
+    void initialize_from_buffer(void* buffer, size_t size) {
+        buffer_ = reinterpret_cast<uint8_t*>(buffer);
+        buffer_size_ = size;
+        block_size_ = size;
+        pool_ = nullptr;
+    }
+
     void* allocate(size_t size) {
+        if (size == 0) return nullptr;
+
+        if (buffer_) {
+            if (size > buffer_size_) return nullptr;
+            uint8_t* ptr = buffer_;
+            buffer_ += size;
+            buffer_size_ -= size;
+            return ptr;
+        }
+
         if (!pool_ || size == 0) return nullptr;
-        
+
         if (size > get_max_allocation_size()) {
             return nullptr;
         }
@@ -158,6 +175,8 @@ private:
     
     ChannelBlockPool* pool_;
     size_t block_size_;
+    uint8_t* buffer_;
+    size_t buffer_size_;
 };
 
 template<typename T>

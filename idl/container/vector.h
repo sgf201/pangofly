@@ -107,12 +107,12 @@ public:
 
     void swap(Vector& other) noexcept;
 
-    BlockAllocator* get_block_allocator() const { 
-        return reinterpret_cast<BlockAllocator*>(allocator_.get_block_allocator()); 
+    BlockAllocator* get_block_allocator() const {
+        return allocator_.get_block_allocator();
     }
 
     void set_block_allocator(BlockAllocator* block_allocator) {
-        allocator_ = Allocator(reinterpret_cast<typename Allocator::pointer>(block_allocator));
+        allocator_ = Allocator(block_allocator);
     }
 
     void copy_from_shm(const Vector& other, BlockAllocator* allocator);
@@ -134,8 +134,7 @@ Vector<T, Allocator>::Vector()
 
 template<typename T, typename Allocator>
 Vector<T, Allocator>::Vector(BlockAllocator* block_allocator)
-    : data_(nullptr), size_(0), capacity_(0), 
-      allocator_(reinterpret_cast<typename Allocator::pointer>(block_allocator)) {}
+    : data_(nullptr), size_(0), capacity_(0), allocator_(block_allocator) {}
 
 template<typename T, typename Allocator>
 Vector<T, Allocator>::Vector(size_type count, const T& value)
@@ -145,8 +144,7 @@ Vector<T, Allocator>::Vector(size_type count, const T& value)
 
 template<typename T, typename Allocator>
 Vector<T, Allocator>::Vector(size_type count, const T& value, BlockAllocator* block_allocator)
-    : data_(nullptr), size_(0), capacity_(0),
-      allocator_(reinterpret_cast<typename Allocator::pointer>(block_allocator)) {
+    : data_(nullptr), size_(0), capacity_(0), allocator_(block_allocator) {
     resize(count, value);
 }
 
