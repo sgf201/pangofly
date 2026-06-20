@@ -4,6 +4,9 @@
 #include <thread>
 #include <random>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
 
 #include "pangofly/pangofly.h"
 #include "pangofly/node/node.h"
@@ -14,7 +17,7 @@ using namespace FaceDetection;
 
 class ImageCaptureNode {
 public:
-    ImageCaptureNode() : node_(nullptr), writer_() {}
+    ImageCaptureNode() : node_(nullptr), writer_(), save_images_(false), save_interval_(10), save_dir_("/tmp/frames") {}
     
     bool Init() {
         if (!pangofly::Init()) {
@@ -36,6 +39,18 @@ public:
         
         std::cout << "ImageCaptureNode initialized successfully" << std::endl;
         return true;
+    }
+    
+    void SetSaveImages(bool enable, int interval = 10, const std::string& dir = "/tmp/frames") {
+        save_images_ = enable;
+        save_interval_ = interval;
+        save_dir_ = dir;
+        
+        if (save_images_) {
+            std::string cmd = "mkdir -p " + save_dir_;
+            system(cmd.c_str());
+            std::cout << "Image saving enabled, interval: " << save_interval_ << " frames, directory: " << save_dir_ << std::endl;
+        }
     }
     
     void Run(int frame_count = 100) {
@@ -69,10 +84,18 @@ public:
                 frame->data[j + 2] = static_cast<uint8_t>((i * 3 + j * 3) % 256);
             }
 
+            if (save_images_ && (i % save_interval_ == 0)) {
+                SaveImageToPPM(frame, i);
+            }
+
             if (writer_->Write(sample)) {
                 std::cout << "Frame " << i << " sent: "
                           << frame->width << "x" << frame->height
-                          << ", size: " << frame->data.size() << " bytes" << std::endl;
+                          << ", size: " << frame->data.size() << " bytes";
+                if (save_images_ && (i % save_interval_ == 0)) {
+                    std::cout << ", saved to " << save_dir_;
+                }
+                std::cout << std::endl;
             } else {
                 std::cerr << "Failed to write frame " << i << std::endl;
                 writer_->Release(sample);
@@ -91,8 +114,47 @@ public:
     }
 
 private:
+    bool SaveImageToPPM(const ImageFrame* frame, int frame_num) {
+        if (!frame || frame->data.empty()) {
+            std::cerr << "Cannot save empty frame" << std::endl;
+            return false;
+        }
+
+        std::ostringstream filename;
+        filename << save_dir_ << "/frame_" << std::setfill('0') << std::setw(6) << frame_num << ".ppm";
+
+        std::ofstream file(filename.str(), std::ios::binary);
+        if (!file) {
+            std::cerr << "Failed to open file: " << filename.str() << std::endl;
+            return false;
+        }
+
+        file << "P6\n";
+        file << frame->width << " " << frame->height << "\n";
+        file << "255\n";
+
+        if (frame->format == 0) {
+            file.write(reinterpret_cast<const char*>(frame->data.data()), frame->data.size());
+        } else if (frame->format == 1) {
+            for (size_t i = 0; i < frame->data.size(); i += 3) {
+                uint8_t b = frame->data[i];
+                uint8_t g = frame->data[i + 1];
+                uint8_t r = frame->data[i + 2];
+                file.write(reinterpret_cast<const char*>(&r), 1);
+                file.write(reinterpret_cast<const char*>(&g), 1);
+                file.write(reinterpret_cast<const char*>(&b), 1);
+            }
+        }
+
+        file.close();
+        return true;
+    }
+
     std::unique_ptr<Node> node_;
     std::shared_ptr<Writer<ImageFrame>> writer_;
+    bool save_images_;
+    int save_interval_;
+    std::string save_dir_;
 };
 
 int main(int argc, char** argv) {
@@ -103,10 +165,28 @@ int main(int argc, char** argv) {
     }
     
     int frame_count = 100;
-    if (argc > 1) {
-        frame_count = std::stoi(argv[1]);
+    bool save_images = false;
+    int save_interval = 10;
+    std::string save_dir = "/tmp/frames";
+    
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--save" || arg == "-s") {
+            save_images = true;
+        } else if (arg == "--interval" || arg == "-i") {
+            if (i + 1 < argc) {
+                save_interval = std::stoi(argv[++i]);
+            }
+        } else if (arg == "--dir" || arg == "-d") {
+            if (i + 1 < argc) {
+                save_dir = argv[++i];
+            }
+        } else {
+            frame_count = std::stoi(arg);
+        }
     }
     
+    node.SetSaveImages(save_images, save_interval, save_dir);
     node.Run(frame_count);
     node.Shutdown();
     
