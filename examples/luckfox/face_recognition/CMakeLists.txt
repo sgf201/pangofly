@@ -15,9 +15,21 @@ include_directories(${PARENT_DIR})
 # Include IDL generated headers (same directory)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
+# Include pangofly headers (note: code uses "pangofly/pangofly.h" so parent dir is needed)
+include_directories(/home/sgf/ws/luckfox_pangofly/pangofly)
+include_directories(/home/sgf/ws/luckfox_pangofly/pangofly/pangofly)
+
 # Link to the built pangofly library
-get_filename_component(PANGOFLY_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../build_luckfox ABSOLUTE)
-link_directories(${PANGOFLY_LIB_DIR})
+link_directories(/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox)
+
+# RKNN and OpenCV paths
+find_package(OpenCV REQUIRED)
+include_directories(${OpenCV_INCLUDE_DIRS})
+
+# RKNN include directory
+include_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/include)
+link_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/lib/uclibc)
+link_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/lib)
 
 # ============================================
 # Node 1: Image Capture (simulated frames)
@@ -26,10 +38,21 @@ add_executable(image_capture_node image_capture_node.cc)
 target_link_libraries(image_capture_node pangofly pthread rt)
 
 # ============================================
-# Node 2: Face Recognition (simulated mode)
+# Node 2: Face Recognition (REAL mode with RetinaFace)
 # ============================================
 add_executable(face_recognition_node face_recognition_node.cc)
-target_link_libraries(face_recognition_node pangofly pthread rt)
+target_link_libraries(face_recognition_node 
+    pangofly 
+    ${OpenCV_LIBS}
+    rknnmrt
+    pthread 
+    rt)
+
+# Copy model files to build directory
+add_custom_command(TARGET face_recognition_node POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/model
+    $<TARGET_FILE_DIR:face_recognition_node>/model)
 
 # ============================================
 # Node 3: Result Display
