@@ -1,8 +1,8 @@
-#include "pangofly/transport/shm/segment.h"
+#include "core/transport/shm/segment.h"
 
 #include <atomic>
 
-#include "pangofly/common/log.h"
+#include "core/common/log.h"
 
 namespace pangofly {
 namespace transport {

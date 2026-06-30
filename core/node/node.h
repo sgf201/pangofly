@@ -6,10 +6,10 @@
 #include <mutex>
 #include <string>
 
-#include "pangofly/node/reader.h"
-#include "pangofly/node/reader_base.h"
-#include "pangofly/node/writer.h"
-#include "pangofly/node/writer_base.h"
+#include "core/node/reader.h"
+#include "core/node/reader_base.h"
+#include "core/node/writer.h"
+#include "core/node/writer_base.h"
 
 namespace pangofly {
 

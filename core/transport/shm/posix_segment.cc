@@ -1,4 +1,4 @@
-#include "pangofly/transport/shm/posix_segment.h"
+#include "core/transport/shm/posix_segment.h"
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -6,8 +6,8 @@
 #include <unistd.h>
 #include <cerrno>
 
-#include "pangofly/common/log.h"
-#include "pangofly/transport/shm/shm_region.h"
+#include "core/common/log.h"
+#include "core/transport/shm/shm_region.h"
 
 namespace pangofly {
 namespace transport {

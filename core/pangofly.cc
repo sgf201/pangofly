@@ -1,4 +1,4 @@
-#include "pangofly/pangofly.h"
+#include "core/pangofly.h"
 
 namespace pangofly {
 

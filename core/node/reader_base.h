@@ -5,9 +5,9 @@
 #include <string>
 #include <functional>
 
-#include "pangofly/node/reader.h"
+#include "core/node/reader.h"
 
-#include "pangofly/transport/shm/posix_segment.h"
+#include "core/transport/shm/posix_segment.h"
 #define PANGOFLY_SEGMENT_TYPE transport::PosixSegment
 
 namespace pangofly {

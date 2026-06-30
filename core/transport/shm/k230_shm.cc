@@ -1,11 +1,11 @@
-#include "pangofly/transport/shm/k230_shm.h"
+#include "core/transport/shm/k230_shm.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
 
-#include "pangofly/common/log.h"
-#include "pangofly/transport/shm/shm_region.h"
+#include "core/common/log.h"
+#include "core/transport/shm/shm_region.h"
 
 extern "C" {
 static inline long syscall0(int num) {

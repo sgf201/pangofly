@@ -5,8 +5,8 @@
 #include <random>
 #include <cstring>
 
-#include "pangofly/pangofly.h"
-#include "pangofly/node/node.h"
+#include "core/pangofly.h"
+#include "core/node/node.h"
 #include "idl/generated/face_detection.h"
 
 // RKNN RetinaFace includes

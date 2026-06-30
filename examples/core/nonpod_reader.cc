@@ -1,4 +1,4 @@
-#include "../pangofly.h"
+#include "core/pangofly.h"
 #include "../../idl/container/vector.h"
 #include "../../idl/container/string.h"
 

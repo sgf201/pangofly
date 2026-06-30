@@ -60,11 +60,11 @@ pangofly 是一个专为自动驾驶场景设计的高性能进程间通信（IP
 
 | 模块 | 目录 | 职责 |
 |------|------|------|
-| **common** | `pangofly/common/` | 通用工具、日志、类型定义 |
-| **message** | `pangofly/message/` | 消息结构定义 |
-| **node** | `pangofly/node/` | 节点、读写器抽象 |
-| **transport** | `pangofly/transport/shm/` | 共享内存传输实现 |
-| **examples** | `pangofly/examples/` | 使用示例 |
+| **common** | `core/common/` | 通用工具、日志、类型定义 |
+| **message** | `core/message/` | 消息结构定义 |
+| **node** | `core/node/` | 节点、读写器抽象 |
+| **transport** | `core/transport/shm/` | 共享内存传输实现 |
+| **examples** | `examples/core/` | 基础使用示例 |
 
 ---
 
@@ -90,7 +90,7 @@ public:
 };
 ```
 
-**文件位置**：[node.h](file:///home/sgf/ws/pangofly/pangofly/node/node.h)
+**文件位置**：[node.h](file:///home/sgf/ws/luckfox_pangofly/pangofly/core/node/node.h)
 
 ### 3.2 Writer（写入器）
 
@@ -107,7 +107,7 @@ public:
 };
 ```
 
-**文件位置**：[writer.h](file:///home/sgf/ws/pangofly/pangofly/node/writer.h)
+**文件位置**：[writer.h](file:///home/sgf/ws/luckfox_pangofly/pangofly/core/node/writer.h)
 
 ### 3.3 Reader（读取器）
 
@@ -125,7 +125,7 @@ public:
 };
 ```
 
-**文件位置**：[reader.h](file:///home/sgf/ws/pangofly/pangofly/node/reader.h)
+**文件位置**：[reader.h](file:///home/sgf/ws/luckfox_pangofly/pangofly/core/node/reader.h)
 
 ### 3.4 Segment（共享内存段）
 
@@ -137,7 +137,7 @@ public:
 - `AcquireBlockToRead()` - 获取可读块
 - `ReleaseReadBlock()` - 释放已读块
 
-**文件位置**：[segment.h](file:///home/sgf/ws/pangofly/pangofly/transport/shm/segment.h)
+**文件位置**：[segment.h](file:///home/sgf/ws/luckfox_pangofly/pangofly/core/transport/shm/segment.h)
 
 ### 3.5 PosixSegment（POSIX共享内存段）
 
@@ -151,13 +151,13 @@ private:
 };
 ```
 
-**文件位置**：[posix_segment.h](file:///home/sgf/ws/pangofly/pangofly/transport/shm/posix_segment.h)
+**文件位置**：[posix_segment.h](file:///home/sgf/ws/luckfox_pangofly/pangofly/core/transport/shm/posix_segment.h)
 
 ### 3.6 ShmConf（共享内存配置）
 
 **职责**：计算共享内存大小、块数量等配置参数。
 
-**文件位置**：[shm_conf.h](file:///home/sgf/ws/pangofly/pangofly/transport/shm/shm_conf.h)
+**文件位置**：[shm_conf.h](file:///home/sgf/ws/luckfox_pangofly/pangofly/core/transport/shm/shm_conf.h)
 
 ---
 

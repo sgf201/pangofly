@@ -5,9 +5,9 @@
 #include <string>
 #include <cstring>
 
-#include "pangofly/node/writer.h"
+#include "core/node/writer.h"
 
-#include "pangofly/transport/shm/posix_segment.h"
+#include "core/transport/shm/posix_segment.h"
 #include "idl/container/vector.h"
 #include "idl/allocator/block_allocator.h"
 #define PANGOFLY_SEGMENT_TYPE transport::PosixSegment

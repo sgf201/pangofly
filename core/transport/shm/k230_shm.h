@@ -3,7 +3,7 @@
 
 #include <string>
 
-#include "pangofly/transport/shm/segment.h"
+#include "core/transport/shm/segment.h"
 
 namespace pangofly {
 namespace transport {

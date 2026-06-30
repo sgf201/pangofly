@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-#include "pangofly/pangofly.h"
+#include "core/pangofly.h"
 #include "idl/container/vector.h"
 #include "idl/container/string.h"
 

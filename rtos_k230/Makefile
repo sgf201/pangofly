@@ -68,47 +68,47 @@ $(BIN_READER): $(OBJS_LIB) $(OBJS_READER) | $(OBJ_DIRS)
 	$(Q)$(CXX) $(CXX_FLAGS) $^ $(LDFLAGS) -o $@
 	$(Q)$(STRIP) $@
 
-$(BUILD)/segment.o: ../pangofly/transport/shm/segment.cc | $(OBJ_DIRS)
+$(BUILD)/segment.o: ../core/transport/shm/segment.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 
-$(BUILD)/shm_conf.o: ../pangofly/transport/shm/shm_conf.cc | $(OBJ_DIRS)
+$(BUILD)/shm_conf.o: ../core/transport/shm/shm_conf.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 
-$(BUILD)/state.o: ../pangofly/transport/shm/state.cc | $(OBJ_DIRS)
+$(BUILD)/state.o: ../core/transport/shm/state.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 
-$(BUILD)/k230_shm.o: ../pangofly/transport/shm/k230_shm.cc | $(OBJ_DIRS)
+$(BUILD)/k230_shm.o: ../core/transport/shm/k230_shm.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 
-$(BUILD)/node.o: ../pangofly/node/node.cc | $(OBJ_DIRS)
+$(BUILD)/node.o: ../core/node/node.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 
-$(BUILD)/pangofly.o: ../pangofly/pangofly.cc | $(OBJ_DIRS)
+$(BUILD)/pangofly.o: ../core/pangofly.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 
-$(BUILD)/shm_example.o: ../pangofly/examples/shm_example.cc | $(OBJ_DIRS)
+$(BUILD)/shm_example.o: ../examples/core/shm_example.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 
-$(BUILD)/writer.o: ../pangofly/examples/writer.cc | $(OBJ_DIRS)
+$(BUILD)/writer.o: ../examples/core/writer.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 
-$(BUILD)/reader.o: ../pangofly/examples/reader.cc | $(OBJ_DIRS)
+$(BUILD)/reader.o: ../examples/core/reader.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 
-$(BUILD)/nonpod_writer.o: ../pangofly/examples/nonpod_writer.cc | $(OBJ_DIRS)
+$(BUILD)/nonpod_writer.o: ../examples/core/nonpod_writer.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 
-$(BUILD)/nonpod_reader.o: ../pangofly/examples/nonpod_reader.cc | $(OBJ_DIRS)
+$(BUILD)/nonpod_reader.o: ../examples/core/nonpod_reader.cc | $(OBJ_DIRS)
 	@echo "[CXX] $@"
 	$(Q)$(CXX) $(CXX_FLAGS) -MD -MP -MF $(@:.o=.d) -c $< -o $@
 

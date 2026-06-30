@@ -10,8 +10,8 @@
 #include <cstring>
 #include <signal.h>
 
-#include "pangofly/pangofly.h"
-#include "pangofly/node/node.h"
+#include "core/pangofly.h"
+#include "core/node/node.h"
 #include "idl/container/vector.h"
 
 // RKADK headers

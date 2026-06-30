@@ -2,18 +2,18 @@ from building import *
 
 cwd = GetCurrentDir()
 src = [
-    '../pangofly/transport/shm/segment.cc',
-    '../pangofly/transport/shm/shm_conf.cc',
-    '../pangofly/transport/shm/state.cc',
-    '../pangofly/transport/shm/k230_shm.cc',
-    '../pangofly/node/node.cc',
-    '../pangofly/pangofly.cc',
-    '../pangofly/examples/shm_example.cc',
+    '../core/transport/shm/segment.cc',
+    '../core/transport/shm/shm_conf.cc',
+    '../core/transport/shm/state.cc',
+    '../core/transport/shm/k230_shm.cc',
+    '../core/node/node.cc',
+    '../core/pangofly.cc',
+    '../examples/core/shm_example.cc',
 ]
 
 CPPPATH = [
     cwd,
-    '../',
+    '..',
 ]
 
 CPPDEFINES = [

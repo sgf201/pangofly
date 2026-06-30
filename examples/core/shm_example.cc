@@ -6,7 +6,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-#include "pangofly/pangofly.h"
+#include "core/pangofly.h"
 
 struct TestMessage {
   int id;

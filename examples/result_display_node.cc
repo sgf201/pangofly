@@ -3,8 +3,8 @@
 #include <chrono>
 #include <thread>
 
-#include "pangofly/pangofly.h"
-#include "pangofly/node/node.h"
+#include "core/pangofly.h"
+#include "core/node/node.h"
 #include "idl/generated/face_detection.h"
 
 using namespace pangofly;

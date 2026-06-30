@@ -32,10 +32,10 @@ include_directories(${PROJECT_SOURCE_DIR})
 
 # Source files
 file(GLOB_RECURSE PANGOFLY_SRCS
-  "${PROJECT_SOURCE_DIR}/pangofly/common/*.cc"
-  "${PROJECT_SOURCE_DIR}/pangofly/transport/shm/*.cc"
-  "${PROJECT_SOURCE_DIR}/pangofly/node/*.cc"
-  "${PROJECT_SOURCE_DIR}/pangofly/*.cc"
+  "${PROJECT_SOURCE_DIR}/core/common/*.cc"
+  "${PROJECT_SOURCE_DIR}/core/transport/shm/*.cc"
+  "${PROJECT_SOURCE_DIR}/core/node/*.cc"
+  "${PROJECT_SOURCE_DIR}/core/*.cc"
 )
 
 # Filter sources based on platform
@@ -66,7 +66,7 @@ target_link_libraries(pangofly pthread rt)
 
 # Installation
 install(TARGETS pangofly LIBRARY DESTINATION lib)
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/pangofly/ DESTINATION include/pangofly FILES_MATCHING PATTERN "*.h")
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/core/ DESTINATION include/pangofly FILES_MATCHING PATTERN "*.h")
 
 # Build examples
 option(BUILD_EXAMPLES "Build example programs" ON)

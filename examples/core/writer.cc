@@ -4,7 +4,7 @@
 #include <chrono>
 #include <cstring>
 
-#include "pangofly/pangofly.h"
+#include "core/pangofly.h"
 
 struct TestMessage {
   int id;

@@ -5,7 +5,7 @@
 #include <memory>
 #include <string>
 
-#include "pangofly/message/message_info.h"
+#include "core/message/message_info.h"
 
 namespace pangofly {
 

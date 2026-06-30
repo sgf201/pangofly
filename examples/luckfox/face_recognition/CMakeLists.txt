@@ -15,12 +15,12 @@ include_directories(${PARENT_DIR})
 # Include IDL generated headers (same directory)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-# Include pangofly headers (note: code uses "pangofly/pangofly.h" so parent dir is needed)
-include_directories(/home/sgf/ws/luckfox_pangofly/pangofly)
-include_directories(/home/sgf/ws/luckfox_pangofly/pangofly/pangofly)
+# Include pangofly headers (note: code uses "core/pangofly.h" so root dir is needed)
+get_filename_component(PANGOFLY_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../.. ABSOLUTE)
+include_directories(${PANGOFLY_ROOT})
 
 # Link to the built pangofly library
-link_directories(/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox)
+link_directories(${PANGOFLY_ROOT}/build_luckfox)
 
 # RKNN and OpenCV paths
 find_package(OpenCV REQUIRED)

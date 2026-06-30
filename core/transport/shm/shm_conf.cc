@@ -1,5 +1,5 @@
-#include "pangofly/transport/shm/shm_conf.h"
-#include "pangofly/transport/shm/state.h"
+#include "core/transport/shm/shm_conf.h"
+#include "core/transport/shm/state.h"
 
 namespace pangofly {
 namespace transport {
