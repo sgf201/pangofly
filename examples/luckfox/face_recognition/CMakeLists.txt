@@ -23,13 +23,14 @@ include_directories(${PANGOFLY_ROOT})
 link_directories(${PANGOFLY_ROOT}/build_luckfox)
 
 # RKNN and OpenCV paths
+set(OPENCV_DIR /home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/lib/uclibc)
+set(OpenCV_DIR ${OPENCV_DIR}/lib/cmake/opencv4)
 find_package(OpenCV REQUIRED)
-include_directories(${OpenCV_INCLUDE_DIRS})
-
-# RKNN include directory
 include_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/include)
+
+# RKNN include and library directory
+include_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/include/rknn)
 link_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/lib/uclibc)
-link_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/lib)
 
 # ============================================
 # Node 1: Image Capture (simulated frames)

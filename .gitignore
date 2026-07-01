@@ -1,6 +1,8 @@
 build/
 build_linux/
 build_k230/
+build_luckfox/
+build_face_rec/
 CMakeLists_linux.txt
 toolchain-riscv64.cmake
 gesture/gesture_app
