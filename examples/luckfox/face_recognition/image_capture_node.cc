@@ -17,7 +17,7 @@
 
 #include "core/pangofly.h"
 #include "core/node/node.h"
-#include "idl/generated/face_detection.h"
+#include "face_detection.h"
 
 #include "rga/im2d.h"
 #include "rga/im2d_single.h"

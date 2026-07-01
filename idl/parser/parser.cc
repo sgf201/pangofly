@@ -1,8 +1,28 @@
 #include "parser.h"
 #include <algorithm>
+#include <unordered_map>
 
 namespace pangofly {
 namespace idl {
+
+static const std::unordered_map<std::string, TokenType> KEYWORD_TOKEN_MAP = {
+    {"namespace", TokenType::KEYWORD_NAMESPACE},
+    {"struct", TokenType::KEYWORD_STRUCT},
+    {"bool", TokenType::KEYWORD_BOOL},
+    {"int8", TokenType::KEYWORD_INT8},
+    {"uint8", TokenType::KEYWORD_UINT8},
+    {"int16", TokenType::KEYWORD_INT16},
+    {"uint16", TokenType::KEYWORD_UINT16},
+    {"int32", TokenType::KEYWORD_INT32},
+    {"uint32", TokenType::KEYWORD_UINT32},
+    {"int64", TokenType::KEYWORD_INT64},
+    {"uint64", TokenType::KEYWORD_UINT64},
+    {"float32", TokenType::KEYWORD_FLOAT32},
+    {"float64", TokenType::KEYWORD_FLOAT64},
+    {"string", TokenType::KEYWORD_STRING},
+    {"vector", TokenType::KEYWORD_VECTOR},
+    {"array", TokenType::KEYWORD_ARRAY},
+};
 
 Parser::Parser(const std::vector<Token>& tokens)
     : tokens_(tokens), current_(0) {}
@@ -179,7 +199,14 @@ bool Parser::check(TokenType type) {
 bool Parser::check_keyword(const std::string& keyword) {
     if (is_at_end()) return false;
     const auto& token = peek();
-    return token.type == TokenType::IDENTIFIER && token.text == keyword;
+    if (token.type == TokenType::IDENTIFIER && token.text == keyword) {
+        return true;
+    }
+    auto it = KEYWORD_TOKEN_MAP.find(keyword);
+    if (it != KEYWORD_TOKEN_MAP.end() && token.type == it->second) {
+        return true;
+    }
+    return false;
 }
 
 bool Parser::match(TokenType type) {

@@ -8,15 +8,70 @@ project(face_recognition_demo CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ============================================
+# Step 1: Build IDL compiler (idc) with host compiler at configure time
+# ============================================
+get_filename_component(PANGOFLY_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../.. ABSOLUTE)
+
+set(IDC_SOURCES
+    ${PANGOFLY_ROOT}/idl/tools/idc.cc
+    ${PANGOFLY_ROOT}/idl/lexer/lexer.cc
+    ${PANGOFLY_ROOT}/idl/parser/parser.cc
+    ${PANGOFLY_ROOT}/idl/codegen/code_generator.cc
+)
+
+set(IDC_EXECUTABLE ${CMAKE_CURRENT_BINARY_DIR}/idc)
+
+# Build idc with host compiler
+if(CMAKE_CROSSCOMPILING)
+    find_program(HOST_CXX_COMPILER g++ REQUIRED)
+else()
+    set(HOST_CXX_COMPILER ${CMAKE_CXX_COMPILER})
+endif()
+
+execute_process(
+    COMMAND ${HOST_CXX_COMPILER} -std=c++17
+        -I${PANGOFLY_ROOT} -I${PANGOFLY_ROOT}/idl
+        -o ${IDC_EXECUTABLE}
+        ${IDC_SOURCES}
+    RESULT_VARIABLE IDC_BUILD_RESULT
+    OUTPUT_VARIABLE IDC_BUILD_OUTPUT
+    ERROR_VARIABLE IDC_BUILD_ERROR
+)
+
+if(NOT IDC_BUILD_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to build IDL compiler:\n${IDC_BUILD_ERROR}")
+endif()
+
+message(STATUS "IDL compiler built: ${IDC_EXECUTABLE}")
+
+# ============================================
+# Step 2: Generate face_detection.h from IDL
+# ============================================
+set(IDL_FILE ${PANGOFLY_ROOT}/examples/face_detection.idl)
+set(GENERATED_HEADER ${CMAKE_CURRENT_BINARY_DIR}/face_detection.h)
+
+add_custom_command(
+    OUTPUT ${GENERATED_HEADER}
+    COMMAND ${IDC_EXECUTABLE} -o ${GENERATED_HEADER} ${IDL_FILE}
+    DEPENDS ${IDL_FILE} ${IDC_SOURCES}
+    COMMENT "Generating face_detection.h from IDL"
+    VERBATIM
+)
+
+add_custom_target(generate_face_detection_header DEPENDS ${GENERATED_HEADER})
+
+# Include generated header directory
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
+
+# ============================================
+# Include directories
+# ============================================
 # Use parent directory's generated headers
 get_filename_component(PARENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../.. ABSOLUTE)
 include_directories(${PARENT_DIR})
 
-# Include IDL generated headers (same directory)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-
 # Include pangofly headers (note: code uses "core/pangofly.h" so root dir is needed)
-get_filename_component(PANGOFLY_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../.. ABSOLUTE)
 include_directories(${PANGOFLY_ROOT})
 
 # Link to the built pangofly library
@@ -41,12 +96,14 @@ link_directories(${RGA_DIR}/lib)
 # Node 1: Image Capture (camera + RGA acceleration)
 # ============================================
 add_executable(image_capture_node image_capture_node.cc)
+add_dependencies(image_capture_node generate_face_detection_header)
 target_link_libraries(image_capture_node pangofly rga pthread rt)
 
 # ============================================
 # Node 2: Face Recognition (REAL mode with RetinaFace)
 # ============================================
 add_executable(face_recognition_node face_recognition_node.cc)
+add_dependencies(face_recognition_node generate_face_detection_header)
 target_link_libraries(face_recognition_node 
     pangofly 
     ${OpenCV_LIBS}
@@ -64,6 +121,7 @@ add_custom_command(TARGET face_recognition_node POST_BUILD
 # Node 3: Result Display
 # ============================================
 add_executable(result_display_node result_display_node.cc)
+add_dependencies(result_display_node generate_face_detection_header)
 target_link_libraries(result_display_node pangofly pthread rt)
 
 # ============================================

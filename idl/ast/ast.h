@@ -33,6 +33,7 @@ struct Type {
     
     Type(TypeKind k) : kind(k) {}
     Type(TypeKind k, const std::string& n) : kind(k), name(n) {}
+    virtual ~Type() = default;
     
     bool is_primitive() const {
         return kind >= TypeKind::PRIMITIVE_BOOL && 

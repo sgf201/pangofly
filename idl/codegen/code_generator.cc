@@ -30,9 +30,14 @@ std::string CodeGenerator::generate() {
         } else {
             oss << generate_namespace_open(ns.name) << "\n";
             for (const auto& s : ns.structs) {
-                oss << "  " << generate_struct(*s);
+                std::string struct_code = generate_struct(*s);
+                std::istringstream iss(struct_code);
+                std::string line;
+                while (std::getline(iss, line)) {
+                    oss << "    " << line << "\n";
+                }
             }
-            oss << "\n" << generate_namespace_close(ns.name) << "\n";
+            oss << generate_namespace_close(ns.name) << "\n";
         }
     }
     
@@ -50,12 +55,11 @@ std::string CodeGenerator::generate_header() {
 }
 
 std::string CodeGenerator::generate_includes() {
-    return "#include \"pangofly/idl/container/vector.h\"\n"
-           "#include \"pangofly/idl/container/string.h\"\n"
-           "#include <cstdint>\n"
-           "#include <cstring>\n"
-           "#include <algorithm>\n"
-           "#include <stdexcept>\n";
+    return "#include <cstdint>\n"
+           "#include <string>\n"
+           "#include <memory>\n"
+           "#include \"idl/container/vector.h\"\n"
+           "#include \"idl/allocator/block_allocator.h\"\n";
 }
 
 std::string CodeGenerator::generate_namespace_open(const std::string& ns) {
@@ -69,29 +73,56 @@ std::string CodeGenerator::generate_namespace_close(const std::string& ns) {
 
 std::string CodeGenerator::generate_struct(const Struct& s) {
     std::ostringstream oss;
-    std::string class_name = s.name;
+    std::string struct_name = s.name;
+    std::string qualified_name = s.qualified_name;
     
-    if (class_name.find("::") != std::string::npos) {
-        class_name = class_name.substr(class_name.find("::") + 2);
+    if (struct_name.find("::") != std::string::npos) {
+        struct_name = struct_name.substr(struct_name.find("::") + 2);
     }
     
-    oss << "class " << class_name << " {\n";
-    oss << "public:\n";
+    oss << "struct " << struct_name << " {\n";
+    oss << "    static const char* GetTypeName() { return \"" << qualified_name << "\"; }\n";
+    oss << "\n";
     
     for (const auto& field : s.fields) {
-        oss << "  " << generate_field(field) << "\n";
+        std::string cpp_type = generate_type_name(*field.type);
+        oss << "    " << cpp_type << " " << field.name << ";\n";
     }
     
     oss << "\n";
-    oss << "private:\n";
+    oss << "    " << struct_name << "() {\n";
     for (const auto& field : s.fields) {
-        std::string cpp_type = generate_type_name(*field.type);
-        if (field.type->is_vector() || field.type->is_string()) {
-            cpp_type += "::Data";
+        if (field.type->is_primitive()) {
+            oss << "        " << field.name << " = 0;\n";
         }
-        oss << "  " << cpp_type << " " << field.name << "_;\n";
     }
-    
+    oss << "    }\n";
+    oss << "\n";
+    oss << "    explicit " << struct_name << "(pangofly::BlockAllocator* allocator) {\n";
+    for (const auto& field : s.fields) {
+        if (field.type->is_primitive()) {
+            oss << "        " << field.name << " = 0;\n";
+        } else if (field.type->is_vector() || field.type->is_string()) {
+            oss << "        " << field.name << ".set_block_allocator(allocator);\n";
+        }
+    }
+    oss << "    }\n";
+    oss << "\n";
+    oss << "    size_t CalculateSize() const {\n";
+    oss << "        size_t total = sizeof(*this);\n";
+    for (const auto& field : s.fields) {
+        if (field.type->is_vector()) {
+            std::string elem_type;
+            auto vec_type = std::dynamic_pointer_cast<VectorType>(
+                std::const_pointer_cast<Type>(field.type));
+            if (vec_type && vec_type->element_type) {
+                elem_type = generate_type_name(*vec_type->element_type);
+            }
+            oss << "        total += " << field.name << ".size() * sizeof(" << elem_type << ");\n";
+        }
+    }
+    oss << "        return total;\n";
+    oss << "    }\n";
     oss << "};\n";
     
     return oss.str();
@@ -127,21 +158,21 @@ std::string CodeGenerator::generate_type_name(const Type& t) {
         case TypeKind::USER_DEF:          return t.name;
         case TypeKind::STRING:            return "pangofly::String";
         case TypeKind::VECTOR: {
-            auto vec_type = std::dynamic_pointer_cast<VectorType>(
-                std::make_shared<Type>(t));
-            if (vec_type && vec_type->element_type) {
-                return "pangofly::Vector<" + 
-                       generate_type_name(*vec_type->element_type) + ">";
-            }
+            try {
+                const VectorType& vec_type = dynamic_cast<const VectorType&>(t);
+                if (vec_type.element_type) {
+                    return "pangofly::Vector<" + 
+                           generate_type_name(*vec_type.element_type) + ">";
+                }
+            } catch (const std::bad_cast&) {}
             return "pangofly::Vector<void>";
         }
         case TypeKind::FIXED_ARRAY: {
-            auto arr_type = std::dynamic_pointer_cast<FixedArrayType>(
-                std::make_shared<Type>(t));
-            if (arr_type) {
-                return "std::array<" + arr_type->name + ", " + 
-                       std::to_string(arr_type->size) + ">";
-            }
+            try {
+                const FixedArrayType& arr_type = dynamic_cast<const FixedArrayType&>(t);
+                return "std::array<" + arr_type.name + ", " + 
+                       std::to_string(arr_type.size) + ">";
+            } catch (const std::bad_cast&) {}
             return "std::array<void, 0>";
         }
         default:

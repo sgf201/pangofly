@@ -1,44 +1,35 @@
-namespace pangofly.examples {
+namespace FaceDetection {
 
-struct Point3D {
-    float x;
-    float y;
-    float z;
+struct FaceBox {
+    int32 x;
+    int32 y;
+    int32 width;
+    int32 height;
+    float32 score;
+    int32 id;
 };
 
-struct BoundingBox {
-    Point3D min_point;
-    Point3D max_point;
-};
-
-struct FaceDetectionResult {
-    int32_t id;
-    float score;
-    BoundingBox bbox;
-    string name;
-    vector<int32_t> landmarks;
+struct FaceLandmark {
+    int32 x;
+    int32 y;
 };
 
 struct ImageFrame {
-    int64_t timestamp;
-    int32_t width;
-    int32_t height;
-    string format;
-    vector<FaceDetectionResult> faces;
-    vector<Point3D> keypoints;
+    int64 timestamp;
+    int32 width;
+    int32 height;
+    int32 format;
+    int32 stride;
+    vector<uint8> data;
 };
 
-struct DetectionStats {
-    int32_t total_faces;
-    int32_t tracked_faces;
-    float avg_confidence;
-    int64_t processing_time_us;
-};
-
-struct CombinedResults {
-    ImageFrame frame;
-    DetectionStats stats;
-    vector<string> tags;
+struct FaceResult {
+    int32 frame_id;
+    int64 timestamp;
+    int32 face_count;
+    float32 processing_time_ms;
+    vector<FaceBox> faces;
+    vector<FaceLandmark> landmarks;
 };
 
 }

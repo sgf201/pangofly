@@ -7,7 +7,7 @@
 
 #include "core/pangofly.h"
 #include "core/node/node.h"
-#include "idl/generated/face_detection.h"
+#include "face_detection.h"
 
 // RKNN RetinaFace includes
 #include "rknn/rknn_api.h"

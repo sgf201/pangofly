@@ -5,7 +5,7 @@
 
 #include "core/pangofly.h"
 #include "core/node/node.h"
-#include "idl/generated/face_detection.h"
+#include "face_detection.h"
 
 using namespace pangofly;
 using namespace FaceDetection;

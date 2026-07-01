@@ -28,7 +28,7 @@ private:
     std::shared_ptr<IDLDocument> document_;
 };
 
-std::string generate_header_code(const std::shared_ptr<IDLDocument>& document) {
+inline std::string generate_header_code(const std::shared_ptr<IDLDocument>& document) {
     CodeGenerator generator(document);
     return generator.generate();
 }

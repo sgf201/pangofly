@@ -1,1 +1,0 @@
-/home/sgf/ws/luckfox_pangofly/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-g++  -Wall -Wextra -fPIC CMakeFiles/pangofly_test.dir/pangofly/examples/shm_example.cc.o -o pangofly_test  -Wl,-rpath,/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox libpangofly.so -lpthread -lrt 

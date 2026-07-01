@@ -1,1 +1,0 @@
-/home/sgf/ws/luckfox_pangofly/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf/bin/arm-rockchip830-linux-uclibcgnueabihf-g++  -Wall -Wextra -fPIC CMakeFiles/face_recognition_node.dir/examples/face_recognition_node.cc.o -o face_recognition_node  -Wl,-rpath,/home/sgf/ws/luckfox_pangofly/pangofly/build_luckfox libpangofly.so -lpthread -lrt 
