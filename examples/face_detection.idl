@@ -1,35 +1,42 @@
-namespace FaceDetection {
+// Face Detection IDL
+// Follows OMG IDL 4.2 / DDS-XTypes standard syntax
 
-struct FaceBox {
-    int32 x;
-    int32 y;
-    int32 width;
-    int32 height;
-    float32 score;
-    int32 id;
-};
+module FaceDetection {
 
-struct FaceLandmark {
-    int32 x;
-    int32 y;
-};
+    // Face bounding box
+    struct FaceBox {
+        long x;
+        long y;
+        long width;
+        long height;
+        float score;
+        long id;
+    };
 
-struct ImageFrame {
-    int64 timestamp;
-    int32 width;
-    int32 height;
-    int32 format;
-    int32 stride;
-    vector<uint8> data;
-};
+    // Face landmark point
+    struct FaceLandmark {
+        long x;
+        long y;
+    };
 
-struct FaceResult {
-    int32 frame_id;
-    int64 timestamp;
-    int32 face_count;
-    float32 processing_time_ms;
-    vector<FaceBox> faces;
-    vector<FaceLandmark> landmarks;
-};
+    // Image frame data
+    struct ImageFrame {
+        long long timestamp;
+        long width;
+        long height;
+        long format;
+        long stride;
+        sequence<octet> data;
+    };
+
+    // Face detection result
+    struct FaceResult {
+        long frame_id;
+        long long timestamp;
+        long face_count;
+        float processing_time_ms;
+        sequence<FaceBox> faces;
+        sequence<FaceLandmark> landmarks;
+    };
 
 }

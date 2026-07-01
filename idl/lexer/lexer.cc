@@ -6,22 +6,21 @@ namespace pangofly {
 namespace idl {
 
 static const std::unordered_map<std::string, TokenType> KEYWORDS = {
-    {"namespace", TokenType::KEYWORD_NAMESPACE},
+    // OMG IDL 4.2 标准关键字
+    {"module", TokenType::KEYWORD_MODULE},
     {"struct", TokenType::KEYWORD_STRUCT},
-    {"bool", TokenType::KEYWORD_BOOL},
-    {"int8", TokenType::KEYWORD_INT8},
-    {"uint8", TokenType::KEYWORD_UINT8},
-    {"int16", TokenType::KEYWORD_INT16},
-    {"uint16", TokenType::KEYWORD_UINT16},
-    {"int32", TokenType::KEYWORD_INT32},
-    {"uint32", TokenType::KEYWORD_UINT32},
-    {"int64", TokenType::KEYWORD_INT64},
-    {"uint64", TokenType::KEYWORD_UINT64},
-    {"float32", TokenType::KEYWORD_FLOAT32},
-    {"float64", TokenType::KEYWORD_FLOAT64},
+    {"boolean", TokenType::KEYWORD_BOOLEAN},
+    {"octet", TokenType::KEYWORD_OCTET},
+    {"short", TokenType::KEYWORD_SHORT},
+    {"long", TokenType::KEYWORD_LONG},
+    {"unsigned", TokenType::KEYWORD_UNSIGNED},
+    {"float", TokenType::KEYWORD_FLOAT},
+    {"double", TokenType::KEYWORD_DOUBLE},
+    {"char", TokenType::KEYWORD_CHAR},
     {"string", TokenType::KEYWORD_STRING},
-    {"vector", TokenType::KEYWORD_VECTOR},
-    {"array", TokenType::KEYWORD_ARRAY},
+    {"sequence", TokenType::KEYWORD_SEQUENCE},
+    {"enum", TokenType::KEYWORD_ENUM},
+    {"typedef", TokenType::KEYWORD_TYPEDEF},
 };
 
 Lexer::Lexer(const std::string& source)

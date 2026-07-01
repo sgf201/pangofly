@@ -6,22 +6,21 @@ namespace pangofly {
 namespace idl {
 
 static const std::unordered_map<std::string, TokenType> KEYWORD_TOKEN_MAP = {
-    {"namespace", TokenType::KEYWORD_NAMESPACE},
+    // OMG IDL 4.2 标准关键字
+    {"module", TokenType::KEYWORD_MODULE},
     {"struct", TokenType::KEYWORD_STRUCT},
-    {"bool", TokenType::KEYWORD_BOOL},
-    {"int8", TokenType::KEYWORD_INT8},
-    {"uint8", TokenType::KEYWORD_UINT8},
-    {"int16", TokenType::KEYWORD_INT16},
-    {"uint16", TokenType::KEYWORD_UINT16},
-    {"int32", TokenType::KEYWORD_INT32},
-    {"uint32", TokenType::KEYWORD_UINT32},
-    {"int64", TokenType::KEYWORD_INT64},
-    {"uint64", TokenType::KEYWORD_UINT64},
-    {"float32", TokenType::KEYWORD_FLOAT32},
-    {"float64", TokenType::KEYWORD_FLOAT64},
+    {"boolean", TokenType::KEYWORD_BOOLEAN},
+    {"octet", TokenType::KEYWORD_OCTET},
+    {"short", TokenType::KEYWORD_SHORT},
+    {"long", TokenType::KEYWORD_LONG},
+    {"unsigned", TokenType::KEYWORD_UNSIGNED},
+    {"float", TokenType::KEYWORD_FLOAT},
+    {"double", TokenType::KEYWORD_DOUBLE},
+    {"char", TokenType::KEYWORD_CHAR},
     {"string", TokenType::KEYWORD_STRING},
-    {"vector", TokenType::KEYWORD_VECTOR},
-    {"array", TokenType::KEYWORD_ARRAY},
+    {"sequence", TokenType::KEYWORD_SEQUENCE},
+    {"enum", TokenType::KEYWORD_ENUM},
+    {"typedef", TokenType::KEYWORD_TYPEDEF},
 };
 
 Parser::Parser(const std::vector<Token>& tokens)
@@ -31,7 +30,7 @@ std::shared_ptr<IDLDocument> Parser::parse() {
     document_ = std::make_shared<IDLDocument>();
     
     while (!is_at_end()) {
-        if (match_keyword("namespace")) {
+        if (match_keyword("module")) {
             parse_namespace();
         } else if (match_keyword("struct")) {
             // 顶级结构体（无命名空间）
@@ -136,41 +135,57 @@ Field Parser::parse_field() {
 }
 
 std::shared_ptr<Type> Parser::parse_type() {
-    // 基本类型
-    if (match(TokenType::KEYWORD_BOOL)) 
-        return std::make_shared<Type>(TypeKind::PRIMITIVE_BOOL);
-    if (match(TokenType::KEYWORD_INT8)) 
-        return std::make_shared<Type>(TypeKind::PRIMITIVE_INT8);
-    if (match(TokenType::KEYWORD_UINT8)) 
-        return std::make_shared<Type>(TypeKind::PRIMITIVE_UINT8);
-    if (match(TokenType::KEYWORD_INT16)) 
-        return std::make_shared<Type>(TypeKind::PRIMITIVE_INT16);
-    if (match(TokenType::KEYWORD_UINT16)) 
-        return std::make_shared<Type>(TypeKind::PRIMITIVE_UINT16);
-    if (match(TokenType::KEYWORD_INT32)) 
-        return std::make_shared<Type>(TypeKind::PRIMITIVE_INT32);
-    if (match(TokenType::KEYWORD_UINT32)) 
+    // unsigned 前缀类型
+    if (match(TokenType::KEYWORD_UNSIGNED)) {
+        if (match(TokenType::KEYWORD_SHORT))
+            return std::make_shared<Type>(TypeKind::PRIMITIVE_UINT16);
+        if (match(TokenType::KEYWORD_LONG)) {
+            // unsigned long long 或 unsigned long
+            if (match(TokenType::KEYWORD_LONG))
+                return std::make_shared<Type>(TypeKind::PRIMITIVE_UINT64);
+            return std::make_shared<Type>(TypeKind::PRIMITIVE_UINT32);
+        }
+        report_error("Expected 'short' or 'long' after 'unsigned'");
         return std::make_shared<Type>(TypeKind::PRIMITIVE_UINT32);
-    if (match(TokenType::KEYWORD_INT64)) 
-        return std::make_shared<Type>(TypeKind::PRIMITIVE_INT64);
-    if (match(TokenType::KEYWORD_UINT64)) 
-        return std::make_shared<Type>(TypeKind::PRIMITIVE_UINT64);
-    if (match(TokenType::KEYWORD_FLOAT32)) 
-        return std::make_shared<Type>(TypeKind::PRIMITIVE_FLOAT32);
-    if (match(TokenType::KEYWORD_FLOAT64)) 
-        return std::make_shared<Type>(TypeKind::PRIMITIVE_FLOAT64);
+    }
     
-    // Vector 类型
-    if (match(TokenType::KEYWORD_VECTOR)) {
+    // long long 类型
+    if (check(TokenType::KEYWORD_LONG)) {
+        // 预读下一个 token 是否也是 long
+        if (peek(1).type == TokenType::KEYWORD_LONG) {
+            advance(); // 第一个 long
+            advance(); // 第二个 long
+            return std::make_shared<Type>(TypeKind::PRIMITIVE_INT64);
+        }
+        advance();
+        return std::make_shared<Type>(TypeKind::PRIMITIVE_INT32);
+    }
+    
+    // 标准 OMG IDL 基本类型
+    if (match(TokenType::KEYWORD_BOOLEAN)) 
+        return std::make_shared<Type>(TypeKind::PRIMITIVE_BOOL);
+    if (match(TokenType::KEYWORD_OCTET)) 
+        return std::make_shared<Type>(TypeKind::PRIMITIVE_UINT8);
+    if (match(TokenType::KEYWORD_SHORT)) 
+        return std::make_shared<Type>(TypeKind::PRIMITIVE_INT16);
+    if (match(TokenType::KEYWORD_FLOAT)) 
+        return std::make_shared<Type>(TypeKind::PRIMITIVE_FLOAT32);
+    if (match(TokenType::KEYWORD_DOUBLE)) 
+        return std::make_shared<Type>(TypeKind::PRIMITIVE_FLOAT64);
+    if (match(TokenType::KEYWORD_CHAR)) 
+        return std::make_shared<Type>(TypeKind::PRIMITIVE_UINT8);
+    
+    // sequence 类型
+    if (match(TokenType::KEYWORD_SEQUENCE)) {
         if (!match(TokenType::LESS)) {
-            report_error("Expected '<' after 'vector'");
+            report_error("Expected '<' after 'sequence'");
             return std::make_shared<Type>(TypeKind::PRIMITIVE_INT32);
         }
         
         auto elem_type = parse_type();
         
         if (!match(TokenType::GREATER)) {
-            report_error("Expected '>' after vector element type");
+            report_error("Expected '>' after sequence element type");
             return std::make_shared<Type>(TypeKind::PRIMITIVE_INT32);
         }
         
