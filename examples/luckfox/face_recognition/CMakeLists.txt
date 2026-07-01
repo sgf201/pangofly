@@ -32,11 +32,16 @@ include_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/inc
 include_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/include/rknn)
 link_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/lib/uclibc)
 
+# RGA include and library directory (for hardware-accelerated NV12->RGB conversion)
+set(RGA_DIR /home/sgf/ws/luckfox_pangofly/media/rga/release_rga_rv1106_arm-rockchip830-linux-uclibcgnueabihf)
+include_directories(${RGA_DIR}/include)
+link_directories(${RGA_DIR}/lib)
+
 # ============================================
-# Node 1: Image Capture (simulated frames)
+# Node 1: Image Capture (camera + RGA acceleration)
 # ============================================
 add_executable(image_capture_node image_capture_node.cc)
-target_link_libraries(image_capture_node pangofly pthread rt)
+target_link_libraries(image_capture_node pangofly rga pthread rt)
 
 # ============================================
 # Node 2: Face Recognition (REAL mode with RetinaFace)

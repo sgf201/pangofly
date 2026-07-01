@@ -229,12 +229,8 @@ private:
     int detect_faces(const cv::Mat& image, face_box_t* faces, int max_faces) {
         if (image.empty()) return 0;
 
-        // Resize to model input size
-        cv::Mat resized;
-        cv::resize(image, resized, cv::Size(rknn_ctx.model_width, rknn_ctx.model_height));
-
-        // Copy to input buffer (assumes RGB format)
-        memcpy(rknn_ctx.input_mems[0]->virt_addr, resized.data, rknn_ctx.model_width * rknn_ctx.model_height * 3);
+        // Image is already model size (640x640), copy directly to input buffer (BGR format)
+        memcpy(rknn_ctx.input_mems[0]->virt_addr, image.data, rknn_ctx.model_width * rknn_ctx.model_height * 3);
 
         // Run inference
         int ret = rknn_run(rknn_ctx.rknn_ctx, nullptr);
@@ -348,7 +344,7 @@ private:
         cv::Mat bgr_image;
         cv::cvtColor(rgb_image, bgr_image, cv::COLOR_RGB2BGR);
 
-        // Detect faces using RetinaFace
+        // Detect faces using RetinaFace (image is already model size: 640x640)
         face_box_t detected_faces[10];
         int face_count = detect_faces(bgr_image, detected_faces, 10);
 
@@ -364,17 +360,14 @@ private:
         result_msg->face_count = face_count;
         result_msg->faces.resize(face_count);
 
-        // Scale face coordinates back to original image size
-        float scale_x = (float)frame.width / (float)rknn_ctx.model_width;
-        float scale_y = (float)frame.height / (float)rknn_ctx.model_height;
-
+        // Face coordinates are already in image space (image is model size)
         for (int i = 0; i < face_count; ++i) {
             result_msg->faces[i].id = i + 1;
             result_msg->faces[i].score = detected_faces[i].score;
-            result_msg->faces[i].x = clamp(detected_faces[i].left * scale_x, 0, frame.width);
-            result_msg->faces[i].y = clamp(detected_faces[i].top * scale_y, 0, frame.height);
-            result_msg->faces[i].width = clamp((detected_faces[i].right - detected_faces[i].left) * scale_x, 0, frame.width);
-            result_msg->faces[i].height = clamp((detected_faces[i].bottom - detected_faces[i].top) * scale_y, 0, frame.height);
+            result_msg->faces[i].x = detected_faces[i].left;
+            result_msg->faces[i].y = detected_faces[i].top;
+            result_msg->faces[i].width = detected_faces[i].right - detected_faces[i].left;
+            result_msg->faces[i].height = detected_faces[i].bottom - detected_faces[i].top;
         }
 
         auto end = std::chrono::high_resolution_clock::now();
