@@ -437,12 +437,11 @@ release:
                 frame->data[j + 2] = static_cast<uint8_t>((i * 3 + j * 3) % 256);
             }
 
-            if (writer_->Write(sample)) {
-                if (i % 10 == 0) {
-                    std::cout << "Frame " << i << " sent: "
-                              << frame->width << "x" << frame->height << std::endl;
-                }
-            } else {
+            if (i % 10 == 0) {
+                std::cout << "Frame " << i << " sent: "
+                          << frame->width << "x" << frame->height << std::endl;
+            }
+            if (!writer_->Write(sample)) {
                 std::cerr << "Failed to write frame " << i << std::endl;
                 writer_->Release(sample);
             }

@@ -376,18 +376,18 @@ private:
         result_msg->processing_time_ms = static_cast<float>(duration.count());
         result_msg->timestamp = frame.timestamp;
 
-        if (writer_->Write(sample)) {
-            std::cout << "[FaceRecognition] Detection completed in " << duration.count() << "ms" << std::endl;
-            std::cout << "[FaceRecognition] Detected " << result_msg->face_count << " faces" << std::endl;
+        std::cout << "[FaceRecognition] Detection completed in " << duration.count() << "ms" << std::endl;
+        std::cout << "[FaceRecognition] Detected " << face_count << " faces" << std::endl;
 
-            for (int i = 0; i < result_msg->face_count; ++i) {
-                const FaceBox& face = result_msg->faces[i];
-                std::cout << "[FaceRecognition]   Face ID: " << face.id
-                          << ", Score: " << face.score
-                          << ", Box: (" << face.x << "," << face.y << ")-("
-                          << face.x + face.width << "," << face.y + face.height << ")" << std::endl;
-            }
-        } else {
+        for (int i = 0; i < face_count; ++i) {
+            const FaceBox& face = result_msg->faces[i];
+            std::cout << "[FaceRecognition]   Face ID: " << face.id
+                      << ", Score: " << face.score
+                      << ", Box: (" << face.x << "," << face.y << ")-("
+                      << face.x + face.width << "," << face.y + face.height << ")" << std::endl;
+        }
+
+        if (!writer_->Write(sample)) {
             std::cerr << "[FaceRecognition] Failed to send face result" << std::endl;
             writer_->Release(sample);
         }
