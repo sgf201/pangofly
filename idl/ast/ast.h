@@ -47,10 +47,11 @@ struct Type {
 };
 
 struct FixedArrayType : public Type {
+    std::shared_ptr<Type> element_type;
     size_t size;
     
-    FixedArrayType(const std::string& elem_type, size_t n)
-        : Type(TypeKind::FIXED_ARRAY, elem_type), size(n) {}
+    FixedArrayType(std::shared_ptr<Type> elem_type, size_t n)
+        : Type(TypeKind::FIXED_ARRAY), element_type(std::move(elem_type)), size(n) {}
 };
 
 struct VectorType : public Type {

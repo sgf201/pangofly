@@ -58,6 +58,7 @@ std::string CodeGenerator::generate_includes() {
     return "#include <cstdint>\n"
            "#include <string>\n"
            "#include <memory>\n"
+           "#include <array>\n"
            "#include \"idl/container/vector.h\"\n"
            "#include \"idl/allocator/block_allocator.h\"\n";
 }
@@ -170,8 +171,11 @@ std::string CodeGenerator::generate_type_name(const Type& t) {
         case TypeKind::FIXED_ARRAY: {
             try {
                 const FixedArrayType& arr_type = dynamic_cast<const FixedArrayType&>(t);
-                return "std::array<" + arr_type.name + ", " + 
-                       std::to_string(arr_type.size) + ">";
+                if (arr_type.element_type) {
+                    return "std::array<" + 
+                           generate_type_name(*arr_type.element_type) + ", " + 
+                           std::to_string(arr_type.size) + ">";
+                }
             } catch (const std::bad_cast&) {}
             return "std::array<void, 0>";
         }

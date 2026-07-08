@@ -80,6 +80,9 @@ void Parser::parse_namespace() {
         report_error("Expected '}' after namespace");
     }
     
+    // module 定义后可选的分号（OMG IDL 标准要求）
+    match(TokenType::SEMICOLON);
+    
     document_->add_namespace(std::move(ns));
 }
 
@@ -126,6 +129,20 @@ Field Parser::parse_field() {
     }
     
     std::string field_name = previous().text;
+    
+    // 定长数组：type name[size]
+    if (match(TokenType::LBRACKET)) {
+        if (!match(TokenType::INTEGER_LITERAL)) {
+            report_error("Expected array size after '['");
+            return Field(std::move(field_type), field_name);
+        }
+        size_t array_size = std::stoul(previous().text);
+        if (!match(TokenType::RBRACKET)) {
+            report_error("Expected ']' after array size");
+            return Field(std::move(field_type), field_name);
+        }
+        field_type = std::make_shared<FixedArrayType>(std::move(field_type), array_size);
+    }
     
     if (!match(TokenType::SEMICOLON)) {
         report_error("Expected ';' after field declaration");
