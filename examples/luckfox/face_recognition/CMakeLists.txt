@@ -23,10 +23,9 @@ set(IDC_SOURCES
 set(IDC_EXECUTABLE ${CMAKE_CURRENT_BINARY_DIR}/idc)
 
 # Build idc with host compiler
-if(CMAKE_CROSSCOMPILING)
-    find_program(HOST_CXX_COMPILER g++ REQUIRED)
-else()
-    set(HOST_CXX_COMPILER ${CMAKE_CXX_COMPILER})
+find_program(HOST_CXX_COMPILER g++)
+if(NOT HOST_CXX_COMPILER)
+    message(FATAL_ERROR "Host g++ compiler not found for building IDL compiler")
 endif()
 
 execute_process(
@@ -84,20 +83,62 @@ find_package(OpenCV REQUIRED)
 include_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/include)
 
 # RKNN include and library directory
-include_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/include/rknn)
-link_directories(/home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example/lib/uclibc)
+set(RKMPI_ROOT /home/sgf/ws/luckfox_pangofly/luckfox_pico_rkmpi_example)
+include_directories(${RKMPI_ROOT}/include/rknn)
+link_directories(${RKMPI_ROOT}/lib/uclibc)
 
 # RGA include and library directory (for hardware-accelerated NV12->RGB conversion)
 set(RGA_DIR /home/sgf/ws/luckfox_pangofly/media/rga/release_rga_rv1106_arm-rockchip830-linux-uclibcgnueabihf)
 include_directories(${RGA_DIR}/include)
 link_directories(${RGA_DIR}/lib)
 
+# RK MPI include directories (for camera capture via VI/ISP)
+include_directories(
+    ${RKMPI_ROOT}
+    ${RKMPI_ROOT}/include
+    ${RKMPI_ROOT}/include/librga
+    ${RKMPI_ROOT}/include/rkaiq
+    ${RKMPI_ROOT}/include/rkaiq/uAPI2
+    ${RKMPI_ROOT}/include/rkaiq/common
+    ${RKMPI_ROOT}/include/rkaiq/xcore
+    ${RKMPI_ROOT}/include/rkaiq/algos
+    ${RKMPI_ROOT}/include/rkaiq/iq_parser
+    ${RKMPI_ROOT}/include/rkaiq/iq_parser_v2
+    ${RKMPI_ROOT}/include/rkaiq/smartIr
+    /home/sgf/ws/luckfox_pangofly/media/out/include
+)
+
+add_compile_definitions(
+    RV1106_1103
+    ISP_HW_V30
+    RKPLATFORM=ON
+    ARCH64=OFF
+    ROCKIVA
+    UAPI2
+    _LARGEFILE_SOURCE
+    _LARGEFILE64_SOURCE
+    _FILE_OFFSET_BITS=64
+)
+
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-rpath-link,${RKMPI_ROOT}/lib/uclibc")
+
 # ============================================
 # Node 1: Image Capture (camera + RGA acceleration)
 # ============================================
 add_executable(image_capture_node image_capture_node.cc)
 add_dependencies(image_capture_node generate_face_detection_header)
-target_link_libraries(image_capture_node pangofly rga pthread rt)
+target_link_libraries(image_capture_node
+    pangofly
+    sample_comm
+    rockit
+    rockchip_mpp
+    rkaiq
+    rockiva
+    rga
+    pthread
+    rt
+    dl
+)
 
 # ============================================
 # Node 2: Face Recognition (REAL mode with RetinaFace)
