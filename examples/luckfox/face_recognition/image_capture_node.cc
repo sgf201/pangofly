@@ -328,13 +328,14 @@ private:
         }
     }
 
-    bool ConvertNV12ToRGBWithResize(void* src_nv12, int src_w, int src_h,
+    bool ConvertNV12ToRGBWithResize(MB_BLK src_mb, int src_w, int src_h,
                                  uint8_t* dst_rgb, int dst_w, int dst_h) {
         if (!rga_inited_) return false;
 
         IM_STATUS ret;
         rga_buffer_t src_img, dst_img;
         rga_buffer_handle_t src_handle = 0, dst_handle = 0;
+        bool use_fd = false;
 
         memset(&src_img, 0, sizeof(src_img));
         memset(&dst_img, 0, sizeof(dst_img));
@@ -342,19 +343,36 @@ private:
         int src_fmt = RK_FORMAT_YCbCr_420_SP;
         int dst_fmt = RK_FORMAT_RGB_888;
 
-        src_handle = importbuffer_virtualaddr(src_nv12, src_w * src_h * 3 / 2);
+        RK_S32 fd = RK_MPI_MB_Handle2Fd(src_mb);
+        if (fd >= 0) {
+            RK_U64 size = RK_MPI_MB_GetSize(src_mb);
+            src_handle = importbuffer_fd(fd, size);
+            if (src_handle != 0) {
+                use_fd = true;
+            }
+        }
+
+        if (!use_fd) {
+            void* src_nv12 = RK_MPI_MB_Handle2VirAddr(src_mb);
+            src_handle = importbuffer_virtualaddr(src_nv12, src_w * src_h * 3 / 2);
+        }
+
         dst_handle = importbuffer_virtualaddr(dst_rgb, dst_w * dst_h * 3);
 
         if (src_handle == 0 || dst_handle == 0) {
-            std::cerr << "RGA import failed, falling back to software conversion" << std::endl;
-            const uint8_t* y_plane = (const uint8_t*)src_nv12;
+            std::cerr << "RGA import failed (src_fd=" << (fd >= 0 ? fd : -1) << "), falling back to software conversion" << std::endl;
+            const uint8_t* y_plane = (const uint8_t*)RK_MPI_MB_Handle2VirAddr(src_mb);
             const uint8_t* uv_plane = y_plane + src_w * src_h;
             SoftwareNV12ToRGB(y_plane, uv_plane, src_w, src_h, src_w,
                               dst_rgb, dst_w, dst_h);
             return true;
         }
 
-        src_img = wrapbuffer_handle(src_handle, src_w, src_h, src_fmt);
+        if (use_fd) {
+            src_img = wrapbuffer_fd(fd, src_w, src_h, src_fmt);
+        } else {
+            src_img = wrapbuffer_handle(src_handle, src_w, src_h, src_fmt);
+        }
         dst_img = wrapbuffer_handle(dst_handle, dst_w, dst_h, dst_fmt);
 
         ret = imcheck(src_img, dst_img, {}, {});
@@ -413,19 +431,21 @@ release:
             }
 
             success_count++;
-            void* vi_data = RK_MPI_MB_Handle2VirAddr(stViFrame.stVFrame.pMbBlk);
             int src_w = stViFrame.stVFrame.u32Width;
             int src_h = stViFrame.stVFrame.u32Height;
+            MB_BLK src_mb = stViFrame.stVFrame.pMbBlk;
             RK_U32 pix_fmt = stViFrame.stVFrame.enPixelFormat;
-            RK_U32 frame_size = RK_MPI_MB_GetSize(stViFrame.stVFrame.pMbBlk);
+            RK_U32 frame_size = RK_MPI_MB_GetSize(src_mb);
+            RK_S32 mb_fd = RK_MPI_MB_Handle2Fd(src_mb);
 
             if (success_count == 1) {
                 std::cout << "First frame info: " << src_w << "x" << src_h
                           << ", fmt=0x" << std::hex << pix_fmt << std::dec
-                          << ", size=" << frame_size << std::endl;
+                          << ", size=" << frame_size
+                          << ", fd=" << mb_fd << std::endl;
             }
 
-            bool ok = ConvertNV12ToRGBWithResize(vi_data, src_w, src_h,
+            bool ok = ConvertNV12ToRGBWithResize(src_mb, src_w, src_h,
                                                 rgb_buf_, MODEL_WIDTH, MODEL_HEIGHT);
 
             RK_MPI_VI_ReleaseChnFrame(0, vi_chn_, &stViFrame);
