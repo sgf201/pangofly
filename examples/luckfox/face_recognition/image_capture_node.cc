@@ -28,6 +28,7 @@ public:
         : node_(nullptr), writer_(), running_(true), frame_id_(0),
           rga_inited_(false),
           rgb_buf_(nullptr), rgb_buf_size_(0),
+          rgb_mb_(RK_NULL), rgb_pool_(0), rgb_use_dma_(false),
           use_camera_(false), camera_width_(0), camera_height_(0),
           isp_inited_(false), mpi_inited_(false), vi_inited_(false),
           mb_pool_(0), vi_chn_(0) {}
@@ -273,12 +274,36 @@ private:
 
     bool InitRGA() {
         rgb_buf_size_ = MODEL_WIDTH * MODEL_HEIGHT * 3;
-        rgb_buf_ = (uint8_t*)malloc(rgb_buf_size_);
-        if (!rgb_buf_) {
-            std::cerr << "Failed to allocate RGB buffer" << std::endl;
-            return false;
+
+        MB_POOL_CONFIG_S pool_cfg;
+        memset(&pool_cfg, 0, sizeof(pool_cfg));
+        pool_cfg.u64MBSize = rgb_buf_size_;
+        pool_cfg.u32MBCnt = 2;
+        pool_cfg.enAllocType = MB_ALLOC_TYPE_DMA;
+        pool_cfg.bPreAlloc = RK_TRUE;
+
+        rgb_pool_ = RK_MPI_MB_CreatePool(&pool_cfg);
+        if (rgb_pool_ == 0) {
+            std::cerr << "RK_MPI_MB_CreatePool failed, fallback to malloc" << std::endl;
+            rgb_buf_ = (uint8_t*)malloc(rgb_buf_size_);
+            if (!rgb_buf_) return false;
+            memset(rgb_buf_, 0, rgb_buf_size_);
+            rgb_use_dma_ = false;
+        } else {
+            rgb_mb_ = RK_MPI_MB_GetMB(rgb_pool_, rgb_buf_size_, RK_TRUE);
+            if (rgb_mb_ == RK_NULL) {
+                std::cerr << "RK_MPI_MB_GetMB failed, fallback to malloc" << std::endl;
+                rgb_buf_ = (uint8_t*)malloc(rgb_buf_size_);
+                if (!rgb_buf_) return false;
+                memset(rgb_buf_, 0, rgb_buf_size_);
+                rgb_use_dma_ = false;
+            } else {
+                rgb_buf_ = (uint8_t*)RK_MPI_MB_Handle2VirAddr(rgb_mb_);
+                rgb_use_dma_ = true;
+                memset(rgb_buf_, 0, rgb_buf_size_);
+                std::cout << "RGB DMA buffer allocated, fd=" << RK_MPI_MB_Handle2Fd(rgb_mb_) << std::endl;
+            }
         }
-        memset(rgb_buf_, 0, rgb_buf_size_);
 
         rga_inited_ = true;
         std::cout << "RGA initialized" << std::endl;
@@ -286,10 +311,18 @@ private:
     }
 
     void CleanupRGA() {
-        if (rgb_buf_) {
-            free(rgb_buf_);
-            rgb_buf_ = nullptr;
+        if (rgb_mb_ && rgb_use_dma_) {
+            RK_MPI_MB_ReleaseMB(rgb_mb_);
+            rgb_mb_ = RK_NULL;
         }
+        if (rgb_pool_ && rgb_use_dma_) {
+            RK_MPI_MB_DestroyPool(rgb_pool_);
+            rgb_pool_ = 0;
+        }
+        if (rgb_buf_ && !rgb_use_dma_) {
+            free(rgb_buf_);
+        }
+        rgb_buf_ = nullptr;
         rga_inited_ = false;
     }
 
@@ -329,7 +362,11 @@ private:
     }
 
     bool ConvertNV12ToRGBWithResize(MB_BLK src_mb, int src_w, int src_h,
-                                 uint8_t* dst_rgb, int dst_w, int dst_h) {
+                                 MB_BLK dst_mb, uint8_t* dst_rgb,
+                                 int dst_w, int dst_h,
+                                 bool dst_use_dma,
+                                 bool &used_rga) {
+        used_rga = false;
         if (!rga_inited_) return false;
 
         IM_STATUS ret;
@@ -345,8 +382,7 @@ private:
 
         RK_S32 fd = RK_MPI_MB_Handle2Fd(src_mb);
         if (fd >= 0) {
-            RK_U64 size = RK_MPI_MB_GetSize(src_mb);
-            src_handle = importbuffer_fd(fd, size);
+            src_handle = importbuffer_fd(fd, src_w, src_h, src_fmt);
             if (src_handle != 0) {
                 use_fd = true;
             }
@@ -354,17 +390,26 @@ private:
 
         if (!use_fd) {
             void* src_nv12 = RK_MPI_MB_Handle2VirAddr(src_mb);
-            src_handle = importbuffer_virtualaddr(src_nv12, src_w * src_h * 3 / 2);
+            src_handle = importbuffer_virtualaddr(src_nv12, src_w, src_h, src_fmt);
         }
 
-        dst_handle = importbuffer_virtualaddr(dst_rgb, dst_w * dst_h * 3);
+        if (dst_use_dma && dst_mb != RK_NULL) {
+            RK_S32 dst_fd = RK_MPI_MB_Handle2Fd(dst_mb);
+            if (dst_fd >= 0) {
+                dst_handle = importbuffer_fd(dst_fd, dst_w, dst_h, dst_fmt);
+            }
+        }
+        if (dst_handle == 0) {
+            dst_handle = importbuffer_virtualaddr(dst_rgb, dst_w, dst_h, dst_fmt);
+        }
 
         if (src_handle == 0 || dst_handle == 0) {
-            std::cerr << "RGA import failed (src_fd=" << (fd >= 0 ? fd : -1) << "), falling back to software conversion" << std::endl;
             const uint8_t* y_plane = (const uint8_t*)RK_MPI_MB_Handle2VirAddr(src_mb);
             const uint8_t* uv_plane = y_plane + src_w * src_h;
             SoftwareNV12ToRGB(y_plane, uv_plane, src_w, src_h, src_w,
                               dst_rgb, dst_w, dst_h);
+            if (src_handle) releasebuffer_handle(src_handle);
+            if (dst_handle) releasebuffer_handle(dst_handle);
             return true;
         }
 
@@ -373,26 +418,32 @@ private:
         } else {
             src_img = wrapbuffer_handle(src_handle, src_w, src_h, src_fmt);
         }
-        dst_img = wrapbuffer_handle(dst_handle, dst_w, dst_h, dst_fmt);
+        if (dst_use_dma && dst_mb != RK_NULL) {
+            RK_S32 dst_fd = RK_MPI_MB_Handle2Fd(dst_mb);
+            dst_img = wrapbuffer_fd(dst_fd, dst_w, dst_h, dst_fmt);
+        } else {
+            dst_img = wrapbuffer_handle(dst_handle, dst_w, dst_h, dst_fmt);
+        }
 
         ret = imcheck(src_img, dst_img, {}, {});
         if (IM_STATUS_NOERROR != ret) {
-            std::cerr << "RGA check error: " << imStrError(ret) << std::endl;
+            std::cerr << "RGA imcheck failed: " << imStrError(ret) << std::endl;
             goto release;
         }
 
         ret = imresize(src_img, dst_img);
         if (ret != IM_STATUS_SUCCESS) {
-            std::cerr << "RGA resize failed: " << imStrError(ret) << std::endl;
+            std::cerr << "RGA imresize failed: " << imStrError(ret) << std::endl;
             goto release;
         }
 
         ret = imcvtcolor(dst_img, dst_img, src_fmt, dst_fmt, IM_YUV_TO_RGB_BT601_FULL);
         if (ret != IM_STATUS_SUCCESS) {
-            std::cerr << "RGA cvtcolor failed: " << imStrError(ret) << std::endl;
+            std::cerr << "RGA imcvtcolor failed: " << imStrError(ret) << std::endl;
             goto release;
         }
 
+        used_rga = true;
         releasebuffer_handle(src_handle);
         releasebuffer_handle(dst_handle);
         return true;
@@ -400,7 +451,11 @@ private:
 release:
         if (src_handle) releasebuffer_handle(src_handle);
         if (dst_handle) releasebuffer_handle(dst_handle);
-        return false;
+        const uint8_t* y_plane = (const uint8_t*)RK_MPI_MB_Handle2VirAddr(src_mb);
+        const uint8_t* uv_plane = y_plane + src_w * src_h;
+        SoftwareNV12ToRGB(y_plane, uv_plane, src_w, src_h, src_w,
+                          dst_rgb, dst_w, dst_h);
+        return true;
     }
 
     void RunCamera(int frame_count) {
@@ -445,14 +500,21 @@ release:
                           << ", fd=" << mb_fd << std::endl;
             }
 
+            bool used_rga = false;
             bool ok = ConvertNV12ToRGBWithResize(src_mb, src_w, src_h,
-                                                rgb_buf_, MODEL_WIDTH, MODEL_HEIGHT);
+                                                rgb_mb_, rgb_buf_,
+                                                MODEL_WIDTH, MODEL_HEIGHT,
+                                                rgb_use_dma_, used_rga);
 
             RK_MPI_VI_ReleaseChnFrame(0, vi_chn_, &stViFrame);
 
             if (!ok) {
                 std::cerr << "RGA conversion failed for frame " << i << std::endl;
                 continue;
+            }
+
+            if (success_count == 1) {
+                std::cout << "Conversion mode: " << (used_rga ? "RGA HARDWARE" : "SOFTWARE FALLBACK") << std::endl;
             }
 
             int data_size = MODEL_WIDTH * MODEL_HEIGHT * 3;
@@ -547,6 +609,9 @@ release:
     bool rga_inited_;
     uint8_t* rgb_buf_;
     int rgb_buf_size_;
+    MB_BLK rgb_mb_;
+    MB_POOL rgb_pool_;
+    bool rgb_use_dma_;
 };
 
 int main(int argc, char** argv) {
