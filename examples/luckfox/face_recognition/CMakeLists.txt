@@ -92,7 +92,7 @@ set(RGA_DIR /home/sgf/ws/luckfox_pangofly/media/rga/release_rga_rv1106_arm-rockc
 include_directories(${RGA_DIR}/include)
 link_directories(${RGA_DIR}/lib)
 
-# RK MPI include directories (for camera capture via VI/ISP)
+# RK ISP include directories (for ISP initialization)
 include_directories(
     ${RKMPI_ROOT}
     ${RKMPI_ROOT}/include

@@ -29,7 +29,8 @@ public:
           rga_inited_(false),
           rgb_buf_(nullptr), rgb_buf_size_(0),
           use_camera_(false), camera_width_(0), camera_height_(0),
-          mpi_inited_(false), isp_inited_(false), vi_inited_(false) {}
+          isp_inited_(false), mpi_inited_(false), vi_inited_(false),
+          mb_pool_(0), vi_chn_(0) {}
 
     ~ImageCaptureNode() {
         Shutdown();
@@ -38,7 +39,7 @@ public:
     bool Init(bool use_camera = true, int camera_width = 720, int camera_height = 480) {
         use_camera_ = use_camera;
         camera_width_ = camera_width;
-        camera_height_ = camera_height_;
+        camera_height_ = camera_height;
 
         if (!pangofly::Init()) {
             std::cerr << "Failed to initialize pangofly" << std::endl;
@@ -63,6 +64,9 @@ public:
                 use_camera_ = false;
             } else if (!InitMPI()) {
                 std::cerr << "Failed to initialize MPI, falling back to simulated mode" << std::endl;
+                use_camera_ = false;
+            } else if (!InitMBPool()) {
+                std::cerr << "Failed to create MB pool, falling back to simulated mode" << std::endl;
                 use_camera_ = false;
             } else if (!InitVI()) {
                 std::cerr << "Failed to initialize VI, falling back to simulated mode" << std::endl;
@@ -108,6 +112,7 @@ public:
         Stop();
         CleanupRGA();
         CleanupVI();
+        CleanupMBPool();
         CleanupMPI();
         CleanupISP();
         writer_.reset();
@@ -116,23 +121,6 @@ public:
     }
 
 private:
-    bool InitMPI() {
-        if (RK_MPI_SYS_Init() != RK_SUCCESS) {
-            std::cerr << "RK_MPI_SYS_Init failed" << std::endl;
-            return false;
-        }
-        mpi_inited_ = true;
-        std::cout << "RK MPI initialized" << std::endl;
-        return true;
-    }
-
-    void CleanupMPI() {
-        if (mpi_inited_) {
-            RK_MPI_SYS_Exit();
-            mpi_inited_ = false;
-        }
-    }
-
     bool InitISP() {
         const char* iq_dir = "/etc/iqfiles";
         rk_aiq_working_mode_t hdr_mode = RK_AIQ_WORKING_MODE_NORMAL;
@@ -151,6 +139,10 @@ private:
 
         isp_inited_ = true;
         std::cout << "RK ISP initialized" << std::endl;
+
+        SAMPLE_COMM_ISP_SetFrameRate(0, 30);
+        std::cout << "Frame rate set to 30fps" << std::endl;
+
         return true;
     }
 
@@ -159,6 +151,48 @@ private:
             SAMPLE_COMM_ISP_Stop(0);
             isp_inited_ = false;
         }
+    }
+
+    bool InitMPI() {
+        if (RK_MPI_SYS_Init() != RK_SUCCESS) {
+            std::cerr << "RK_MPI_SYS_Init failed" << std::endl;
+            return false;
+        }
+        mpi_inited_ = true;
+        std::cout << "RK MPI initialized" << std::endl;
+        return true;
+    }
+
+    void CleanupMPI() {
+        if (mpi_inited_) {
+            RK_MPI_SYS_Exit();
+            mpi_inited_ = false;
+        }
+    }
+
+    bool InitMBPool() {
+        MB_CONFIG_S mb_cfg;
+        memset(&mb_cfg, 0, sizeof(mb_cfg));
+        mb_cfg.u32MaxPoolCnt = 1;
+        mb_cfg.astCommPool[0].u64MBSize = camera_width_ * camera_height_ * 2;
+        mb_cfg.astCommPool[0].u32MBCnt = 4;
+        mb_cfg.astCommPool[0].enAllocType = MB_ALLOC_TYPE_MALLOC;
+        mb_cfg.astCommPool[0].enRemapMode = MB_REMAP_MODE_NONE;
+        mb_cfg.astCommPool[0].enDmaType = MB_DMA_TYPE_NONE;
+        mb_cfg.astCommPool[0].bPreAlloc = RK_FALSE;
+        mb_cfg.astCommPool[0].bNotDelete = RK_FALSE;
+
+        RK_S32 ret = RK_MPI_MB_SetModPoolConfig(MB_UID_VI, &mb_cfg);
+        if (ret != RK_SUCCESS) {
+            std::cerr << "RK_MPI_MB_SetModPoolConfig failed: " << ret << std::endl;
+            return false;
+        }
+
+        std::cout << "VI MB pool configured: 4 blocks of " << mb_cfg.astCommPool[0].u64MBSize << " bytes" << std::endl;
+        return true;
+    }
+
+    void CleanupMBPool() {
     }
 
     bool InitVI() {
@@ -202,13 +236,14 @@ private:
 
         VI_CHN_ATTR_S vi_chn_attr;
         memset(&vi_chn_attr, 0, sizeof(vi_chn_attr));
-        vi_chn_attr.stIspOpt.u32BufCount = 3;
+        vi_chn_attr.stIspOpt.u32BufCount = 4;
         vi_chn_attr.stIspOpt.enMemoryType = VI_V4L2_MEMORY_TYPE_DMABUF;
         vi_chn_attr.stSize.u32Width = camera_width_;
         vi_chn_attr.stSize.u32Height = camera_height_;
         vi_chn_attr.enPixelFormat = RK_FMT_YUV420SP;
         vi_chn_attr.enCompressMode = COMPRESS_MODE_NONE;
-        vi_chn_attr.u32Depth = 2;
+        vi_chn_attr.u32Depth = 3;
+        vi_chn_attr.enAllocBufType = VI_ALLOC_BUF_TYPE_INTERNAL;
 
         ret = RK_MPI_VI_SetChnAttr(0, channelId, &vi_chn_attr);
         if (ret != RK_SUCCESS) {
@@ -225,6 +260,7 @@ private:
         vi_inited_ = true;
         vi_chn_ = channelId;
         std::cout << "RK VI initialized: " << camera_width_ << "x" << camera_height_ << " NV12" << std::endl;
+
         return true;
     }
 
@@ -257,6 +293,41 @@ private:
         rga_inited_ = false;
     }
 
+    static inline uint8_t clamp(int v) {
+        return v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
+    }
+
+    void SoftwareNV12ToRGB(const uint8_t* y_plane, const uint8_t* uv_plane,
+                           int src_w, int src_h, int src_stride,
+                           uint8_t* dst_rgb, int dst_w, int dst_h) {
+        float x_ratio = (float)src_w / dst_w;
+        float y_ratio = (float)src_h / dst_h;
+
+        for (int y = 0; y < dst_h; y++) {
+            for (int x = 0; x < dst_w; x++) {
+                int src_x = (int)(x * x_ratio);
+                int src_y = (int)(y * y_ratio);
+                if (src_x >= src_w) src_x = src_w - 1;
+                if (src_y >= src_h) src_y = src_h - 1;
+
+                uint8_t y_val = y_plane[src_y * src_stride + src_x];
+                int uv_x = src_x / 2;
+                int uv_y = src_y / 2;
+                uint8_t u_val = uv_plane[uv_y * (src_stride / 2) * 2 + uv_x * 2];
+                uint8_t v_val = uv_plane[uv_y * (src_stride / 2) * 2 + uv_x * 2 + 1];
+
+                int r = (int)(1.164f * (y_val - 16) + 1.596f * (v_val - 128));
+                int g = (int)(1.164f * (y_val - 16) - 0.813f * (v_val - 128) - 0.391f * (u_val - 128));
+                int b = (int)(1.164f * (y_val - 16) + 2.018f * (u_val - 128));
+
+                int dst_idx = (y * dst_w + x) * 3;
+                dst_rgb[dst_idx] = clamp(r);
+                dst_rgb[dst_idx + 1] = clamp(g);
+                dst_rgb[dst_idx + 2] = clamp(b);
+            }
+        }
+    }
+
     bool ConvertNV12ToRGBWithResize(void* src_nv12, int src_w, int src_h,
                                  uint8_t* dst_rgb, int dst_w, int dst_h) {
         if (!rga_inited_) return false;
@@ -268,15 +339,19 @@ private:
         memset(&src_img, 0, sizeof(src_img));
         memset(&dst_img, 0, sizeof(dst_img));
 
-        int src_fmt = RK_FORMAT_YCrCb_420_SP;
+        int src_fmt = RK_FORMAT_YCbCr_420_SP;
         int dst_fmt = RK_FORMAT_RGB_888;
 
         src_handle = importbuffer_virtualaddr(src_nv12, src_w * src_h * 3 / 2);
         dst_handle = importbuffer_virtualaddr(dst_rgb, dst_w * dst_h * 3);
 
         if (src_handle == 0 || dst_handle == 0) {
-            std::cerr << "Failed to import RGA buffers" << std::endl;
-            goto release;
+            std::cerr << "RGA import failed, falling back to software conversion" << std::endl;
+            const uint8_t* y_plane = (const uint8_t*)src_nv12;
+            const uint8_t* uv_plane = y_plane + src_w * src_h;
+            SoftwareNV12ToRGB(y_plane, uv_plane, src_w, src_h, src_w,
+                              dst_rgb, dst_w, dst_h);
+            return true;
         }
 
         src_img = wrapbuffer_handle(src_handle, src_w, src_h, src_fmt);
@@ -314,17 +389,41 @@ release:
         std::cout << "Camera capture mode, " << frame_count << " frames" << std::endl;
 
         VIDEO_FRAME_INFO_S stViFrame;
+        int timeout_ms = 2000;
+        int success_count = 0;
+        int fail_count = 0;
 
         for (int i = 0; i < frame_count && running_; ++i) {
-            RK_S32 s32Ret = RK_MPI_VI_GetChnFrame(0, vi_chn_, &stViFrame, 1000);
+            RK_S32 s32Ret = RK_MPI_VI_GetChnFrame(0, vi_chn_, &stViFrame, timeout_ms);
             if (s32Ret != RK_SUCCESS) {
-                std::cerr << "RK_MPI_VI_GetChnFrame failed: " << s32Ret << std::endl;
+                fail_count++;
+                if (fail_count <= 5) {
+                    VI_CHN_STATUS_S chn_status;
+                    RK_S32 qret = RK_MPI_VI_QueryChnStatus(0, vi_chn_, &chn_status);
+                    if (qret == RK_SUCCESS) {
+                        std::cerr << "GetChnFrame failed (attempt " << fail_count << "), chn status: "
+                                  << "u32FrameRate=" << chn_status.u32FrameRate
+                                  << ", u32CurFrameID=" << chn_status.u32CurFrameID
+                                  << ", u32OutputLostFrame=" << chn_status.u32OutputLostFrame
+                                  << ", u32VbFail=" << chn_status.u32VbFail
+                                  << ", size=" << chn_status.stSize.u32Width << "x" << chn_status.stSize.u32Height << std::endl;
+                    }
+                }
                 continue;
             }
 
+            success_count++;
             void* vi_data = RK_MPI_MB_Handle2VirAddr(stViFrame.stVFrame.pMbBlk);
             int src_w = stViFrame.stVFrame.u32Width;
             int src_h = stViFrame.stVFrame.u32Height;
+            RK_U32 pix_fmt = stViFrame.stVFrame.enPixelFormat;
+            RK_U32 frame_size = RK_MPI_MB_GetSize(stViFrame.stVFrame.pMbBlk);
+
+            if (success_count == 1) {
+                std::cout << "First frame info: " << src_w << "x" << src_h
+                          << ", fmt=0x" << std::hex << pix_fmt << std::dec
+                          << ", size=" << frame_size << std::endl;
+            }
 
             bool ok = ConvertNV12ToRGBWithResize(vi_data, src_w, src_h,
                                                 rgb_buf_, MODEL_WIDTH, MODEL_HEIGHT);
@@ -365,6 +464,9 @@ release:
 
             frame_id_++;
         }
+
+        std::cout << "Camera capture done: " << success_count << " success, "
+                  << fail_count << " failed" << std::endl;
     }
 
     void RunSimulated(int frame_count) {
@@ -416,10 +518,11 @@ release:
     int camera_width_;
     int camera_height_;
 
-    bool mpi_inited_;
     bool isp_inited_;
+    bool mpi_inited_;
     bool vi_inited_;
     int vi_chn_;
+    MB_POOL mb_pool_;
 
     bool rga_inited_;
     uint8_t* rgb_buf_;
