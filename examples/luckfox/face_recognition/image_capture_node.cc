@@ -2,9 +2,23 @@
 #include <memory>
 #include <chrono>
 #include <thread>
+#include <random>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
 #include <signal.h>
+#include <vector>
 #include <unistd.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <linux/videodev2.h>
+
+#include "opencv2/core/core.hpp"
+#include "opencv2/highgui/highgui.hpp"
+#include "opencv2/imgproc/imgproc.hpp"
 
 #include "core/pangofly.h"
 #include "core/node/node.h"
@@ -15,6 +29,10 @@
 #include "rga/im2d_single.h"
 #include "rga/im2d_buffer.h"
 #include "rga/rga.h"
+#include "rga/RgaApi.h"
+#include "rga/drmrga.h"
+#include "rk_mpi_sys.h"
+#include "rk_mpi_mb.h"
 
 using namespace pangofly;
 using namespace FaceDetection;
@@ -22,22 +40,29 @@ using namespace FaceDetection;
 static const int MODEL_WIDTH = 640;
 static const int MODEL_HEIGHT = 640;
 
+struct V4L2Buffer {
+    void* start;
+    size_t length;
+    int fd;
+};
+
 class ImageCaptureNode {
 public:
     ImageCaptureNode()
         : node_(nullptr), writer_(), running_(true), frame_id_(0),
+          camera_fd_(-1), buffers_(nullptr), buffer_count_(0),
           rga_inited_(false),
           rgb_buf_(nullptr), rgb_buf_size_(0),
           rgb_mb_(RK_NULL), rgb_pool_(0), rgb_use_dma_(false),
           use_camera_(false), camera_width_(0), camera_height_(0),
-          isp_inited_(false), mpi_inited_(false), vi_inited_(false),
-          mb_pool_(0), vi_chn_(0) {}
+          isp_inited_(false) {}
 
     ~ImageCaptureNode() {
         Shutdown();
     }
 
-    bool Init(bool use_camera = true, int camera_width = 720, int camera_height = 480) {
+    bool Init(bool use_camera = true, const std::string& device = "/dev/video11",
+             int camera_width = 720, int camera_height = 480) {
         use_camera_ = use_camera;
         camera_width_ = camera_width;
         camera_height_ = camera_height;
@@ -63,24 +88,20 @@ public:
             if (!InitISP()) {
                 std::cerr << "Failed to initialize ISP, falling back to simulated mode" << std::endl;
                 use_camera_ = false;
-            } else if (!InitMPI()) {
-                std::cerr << "Failed to initialize MPI, falling back to simulated mode" << std::endl;
+            } else if (!InitCamera(device, camera_width, camera_height)) {
+                std::cerr << "Failed to initialize camera, falling back to simulated mode" << std::endl;
                 use_camera_ = false;
-            } else if (!InitMBPool()) {
-                std::cerr << "Failed to create MB pool, falling back to simulated mode" << std::endl;
-                use_camera_ = false;
-            } else if (!InitVI()) {
-                std::cerr << "Failed to initialize VI, falling back to simulated mode" << std::endl;
-                use_camera_ = false;
+                CleanupCamera();
             } else if (!InitRGA()) {
                 std::cerr << "Failed to initialize RGA, falling back to simulated mode" << std::endl;
                 use_camera_ = false;
+                CleanupCamera();
             }
         }
 
         if (use_camera_) {
             std::cout << "ImageCaptureNode initialized (CAMERA mode with RGA acceleration)" << std::endl;
-            std::cout << "  Camera: " << camera_width_ << "x" << camera_height_ << " NV12 (RK MPI)" << std::endl;
+            std::cout << "  Camera: " << camera_width_ << "x" << camera_height_ << " NV12 (V4L2)" << std::endl;
             std::cout << "  Output: " << MODEL_WIDTH << "x" << MODEL_HEIGHT << " RGB888" << std::endl;
         } else {
             std::cout << "ImageCaptureNode initialized (SIMULATED mode)" << std::endl;
@@ -112,9 +133,7 @@ public:
     void Shutdown() {
         Stop();
         CleanupRGA();
-        CleanupVI();
-        CleanupMBPool();
-        CleanupMPI();
+        CleanupCamera();
         CleanupISP();
         writer_.reset();
         node_.reset();
@@ -123,27 +142,29 @@ public:
 
 private:
     bool InitISP() {
-        const char* iq_dir = "/etc/iqfiles";
+        std::cout << "Initializing ISP..." << std::endl;
+
+        system("/oem/usr/bin/RkLunch-stop.sh > /dev/null 2>&1");
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
         rk_aiq_working_mode_t hdr_mode = RK_AIQ_WORKING_MODE_NORMAL;
         RK_BOOL multi_sensor = RK_FALSE;
+        const char* iq_dir = "/etc/iqfiles";
 
-        if (SAMPLE_COMM_ISP_Init(0, hdr_mode, multi_sensor, (char*)iq_dir) != RK_SUCCESS) {
-            std::cerr << "SAMPLE_COMM_ISP_Init failed" << std::endl;
+        int ret = SAMPLE_COMM_ISP_Init(0, hdr_mode, multi_sensor, iq_dir);
+        if (ret < 0) {
+            std::cerr << "SAMPLE_COMM_ISP_Init failed: " << ret << std::endl;
             return false;
         }
 
-        if (SAMPLE_COMM_ISP_Run(0) != RK_SUCCESS) {
-            std::cerr << "SAMPLE_COMM_ISP_Run failed" << std::endl;
-            SAMPLE_COMM_ISP_Stop(0);
+        ret = SAMPLE_COMM_ISP_Run(0);
+        if (ret < 0) {
+            std::cerr << "SAMPLE_COMM_ISP_Run failed: " << ret << std::endl;
             return false;
         }
 
         isp_inited_ = true;
         std::cout << "RK ISP initialized" << std::endl;
-
-        SAMPLE_COMM_ISP_SetFrameRate(0, 30);
-        std::cout << "Frame rate set to 30fps" << std::endl;
-
         return true;
     }
 
@@ -151,124 +172,109 @@ private:
         if (isp_inited_) {
             SAMPLE_COMM_ISP_Stop(0);
             isp_inited_ = false;
+            std::cout << "ISP stopped" << std::endl;
         }
     }
 
-    bool InitMPI() {
-        if (RK_MPI_SYS_Init() != RK_SUCCESS) {
-            std::cerr << "RK_MPI_SYS_Init failed" << std::endl;
-            return false;
-        }
-        mpi_inited_ = true;
-        std::cout << "RK MPI initialized" << std::endl;
-        return true;
-    }
-
-    void CleanupMPI() {
-        if (mpi_inited_) {
-            RK_MPI_SYS_Exit();
-            mpi_inited_ = false;
-        }
-    }
-
-    bool InitMBPool() {
-        MB_CONFIG_S mb_cfg;
-        memset(&mb_cfg, 0, sizeof(mb_cfg));
-        mb_cfg.u32MaxPoolCnt = 1;
-        mb_cfg.astCommPool[0].u64MBSize = camera_width_ * camera_height_ * 2;
-        mb_cfg.astCommPool[0].u32MBCnt = 4;
-        mb_cfg.astCommPool[0].enAllocType = MB_ALLOC_TYPE_MALLOC;
-        mb_cfg.astCommPool[0].enRemapMode = MB_REMAP_MODE_NONE;
-        mb_cfg.astCommPool[0].enDmaType = MB_DMA_TYPE_NONE;
-        mb_cfg.astCommPool[0].bPreAlloc = RK_FALSE;
-        mb_cfg.astCommPool[0].bNotDelete = RK_FALSE;
-
-        RK_S32 ret = RK_MPI_MB_SetModPoolConfig(MB_UID_VI, &mb_cfg);
-        if (ret != RK_SUCCESS) {
-            std::cerr << "RK_MPI_MB_SetModPoolConfig failed: " << ret << std::endl;
+    bool InitCamera(const std::string& device, int width, int height) {
+        camera_fd_ = open(device.c_str(), O_RDWR, 0);
+        if (camera_fd_ < 0) {
+            std::cerr << "Failed to open camera device: " << device << ", errno: " << errno << std::endl;
             return false;
         }
 
-        std::cout << "VI MB pool configured: 4 blocks of " << mb_cfg.astCommPool[0].u64MBSize << " bytes" << std::endl;
-        return true;
-    }
+        struct v4l2_format fmt;
+        memset(&fmt, 0, sizeof(fmt));
+        fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        fmt.fmt.pix_mp.width = width;
+        fmt.fmt.pix_mp.height = height;
+        fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
+        fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
 
-    void CleanupMBPool() {
-    }
+        if (ioctl(camera_fd_, VIDIOC_S_FMT, &fmt) < 0) {
+            std::cerr << "Failed to set NV12 format, errno: " << errno << std::endl;
+            return false;
+        }
 
-    bool InitVI() {
-        int ret = 0;
-        int devId = 0;
-        int pipeId = devId;
-        int channelId = 0;
+        camera_width_ = fmt.fmt.pix_mp.width;
+        camera_height_ = fmt.fmt.pix_mp.height;
 
-        VI_DEV_ATTR_S stDevAttr;
-        VI_DEV_BIND_PIPE_S stBindPipe;
-        memset(&stDevAttr, 0, sizeof(stDevAttr));
-        memset(&stBindPipe, 0, sizeof(stBindPipe));
+        struct v4l2_requestbuffers req;
+        memset(&req, 0, sizeof(req));
+        req.count = 4;
+        req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        req.memory = V4L2_MEMORY_MMAP;
 
-        ret = RK_MPI_VI_GetDevAttr(devId, &stDevAttr);
-        if (ret == RK_ERR_VI_NOT_CONFIG) {
-            ret = RK_MPI_VI_SetDevAttr(devId, &stDevAttr);
-            if (ret != RK_SUCCESS) {
-                std::cerr << "RK_MPI_VI_SetDevAttr failed: " << ret << std::endl;
+        if (ioctl(camera_fd_, VIDIOC_REQBUFS, &req) < 0) {
+            std::cerr << "Failed to request buffers, errno: " << errno << std::endl;
+            return false;
+        }
+
+        buffer_count_ = req.count;
+        buffers_ = new V4L2Buffer[buffer_count_];
+
+        for (int i = 0; i < buffer_count_; i++) {
+            struct v4l2_plane planes[VIDEO_MAX_PLANES];
+            struct v4l2_buffer buf;
+            memset(&buf, 0, sizeof(buf));
+            memset(planes, 0, sizeof(planes));
+
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+            buf.index = i;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.m.planes = planes;
+            buf.length = 1;
+
+            if (ioctl(camera_fd_, VIDIOC_QUERYBUF, &buf) < 0) {
+                std::cerr << "Failed to query buffer " << i << std::endl;
+                return false;
+            }
+
+            buffers_[i].start = mmap(NULL, buf.m.planes[0].length,
+                                    PROT_READ | PROT_WRITE, MAP_SHARED,
+                                    camera_fd_, buf.m.planes[0].m.mem_offset);
+            buffers_[i].length = buf.m.planes[0].length;
+            buffers_[i].fd = -1;
+
+            if (buffers_[i].start == MAP_FAILED) {
+                std::cerr << "Failed to mmap buffer " << i << std::endl;
+                return false;
+            }
+
+            if (ioctl(camera_fd_, VIDIOC_QBUF, &buf) < 0) {
+                std::cerr << "Failed to queue buffer " << i << std::endl;
                 return false;
             }
         }
 
-        ret = RK_MPI_VI_GetDevIsEnable(devId);
-        if (ret != RK_SUCCESS) {
-            ret = RK_MPI_VI_EnableDev(devId);
-            if (ret != RK_SUCCESS) {
-                std::cerr << "RK_MPI_VI_EnableDev failed: " << ret << std::endl;
-                return false;
-            }
-            stBindPipe.u32Num = 1;
-            stBindPipe.PipeId[0] = pipeId;
-            ret = RK_MPI_VI_SetDevBindPipe(devId, &stBindPipe);
-            if (ret != RK_SUCCESS) {
-                std::cerr << "RK_MPI_VI_SetDevBindPipe failed: " << ret << std::endl;
-                return false;
-            }
-            std::cout << "RK VI device enabled and pipe bound" << std::endl;
-        } else {
-            std::cout << "RK VI device already enabled" << std::endl;
-        }
-
-        VI_CHN_ATTR_S vi_chn_attr;
-        memset(&vi_chn_attr, 0, sizeof(vi_chn_attr));
-        vi_chn_attr.stIspOpt.u32BufCount = 4;
-        vi_chn_attr.stIspOpt.enMemoryType = VI_V4L2_MEMORY_TYPE_DMABUF;
-        vi_chn_attr.stSize.u32Width = camera_width_;
-        vi_chn_attr.stSize.u32Height = camera_height_;
-        vi_chn_attr.enPixelFormat = RK_FMT_YUV420SP;
-        vi_chn_attr.enCompressMode = COMPRESS_MODE_NONE;
-        vi_chn_attr.u32Depth = 3;
-        vi_chn_attr.enAllocBufType = VI_ALLOC_BUF_TYPE_INTERNAL;
-
-        ret = RK_MPI_VI_SetChnAttr(0, channelId, &vi_chn_attr);
-        if (ret != RK_SUCCESS) {
-            std::cerr << "RK_MPI_VI_SetChnAttr failed: " << ret << std::endl;
+        enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        if (ioctl(camera_fd_, VIDIOC_STREAMON, &type) < 0) {
+            std::cerr << "Failed to start stream, errno: " << errno << std::endl;
             return false;
         }
 
-        ret = RK_MPI_VI_EnableChn(0, channelId);
-        if (ret != RK_SUCCESS) {
-            std::cerr << "RK_MPI_VI_EnableChn failed: " << ret << std::endl;
-            return false;
-        }
-
-        vi_inited_ = true;
-        vi_chn_ = channelId;
-        std::cout << "RK VI initialized: " << camera_width_ << "x" << camera_height_ << " NV12" << std::endl;
-
+        std::cout << "V4L2 camera initialized: " << camera_width_ << "x" << camera_height_ << " NV12" << std::endl;
         return true;
     }
 
-    void CleanupVI() {
-        if (vi_inited_) {
-            RK_MPI_VI_DisableChn(0, vi_chn_);
-            vi_inited_ = false;
+    void CleanupCamera() {
+        if (camera_fd_ >= 0) {
+            enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+            ioctl(camera_fd_, VIDIOC_STREAMOFF, &type);
+
+            if (buffers_) {
+                for (int i = 0; i < buffer_count_; i++) {
+                    if (buffers_[i].start != MAP_FAILED && buffers_[i].start) {
+                        munmap(buffers_[i].start, buffers_[i].length);
+                    }
+                }
+                delete[] buffers_;
+                buffers_ = nullptr;
+            }
+
+            close(camera_fd_);
+            camera_fd_ = -1;
+            std::cout << "V4L2 camera closed" << std::endl;
         }
     }
 
@@ -330,6 +336,19 @@ private:
         return v < 0 ? 0 : (v > 255 ? 255 : (uint8_t)v);
     }
 
+    static void SavePNG(const std::string& filename, const uint8_t* rgb, int width, int height) {
+        cv::Mat img(height, width, CV_8UC3, const_cast<uint8_t*>(rgb));
+        cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
+        cv::imwrite(filename, img);
+    }
+
+    static void SaveNV12(const std::string& filename, const uint8_t* y, const uint8_t* uv, int width, int height) {
+        std::ofstream file(filename, std::ios::binary);
+        if (!file) return;
+        file.write(reinterpret_cast<const char*>(y), width * height);
+        file.write(reinterpret_cast<const char*>(uv), width * height / 2);
+    }
+
     void SoftwareNV12ToRGB(const uint8_t* y_plane, const uint8_t* uv_plane,
                            int src_w, int src_h, int src_stride,
                            uint8_t* dst_rgb, int dst_w, int dst_h) {
@@ -361,98 +380,73 @@ private:
         }
     }
 
-    bool ConvertNV12ToRGBWithResize(MB_BLK src_mb, int src_w, int src_h,
-                                 MB_BLK dst_mb, uint8_t* dst_rgb,
-                                 int dst_w, int dst_h,
-                                 bool dst_use_dma,
-                                 bool &used_rga) {
+    bool ConvertNV12ToRGBWithResize(uint8_t* src_nv12, int src_w, int src_h,
+                                    MB_BLK dst_mb, uint8_t* dst_rgb,
+                                    int dst_w, int dst_h,
+                                    bool use_dma_dst, bool& used_rga) {
         used_rga = false;
         if (!rga_inited_) return false;
 
-        IM_STATUS ret;
-        rga_buffer_t src_img, dst_img;
-        rga_buffer_handle_t src_handle = 0, dst_handle = 0;
-        bool use_fd = false;
+        const uint8_t* y_plane = src_nv12;
+        const uint8_t* uv_plane = src_nv12 + src_w * src_h;
 
-        memset(&src_img, 0, sizeof(src_img));
-        memset(&dst_img, 0, sizeof(dst_img));
+        rga_buffer_handle_t src_handle = 0;
+        rga_buffer_handle_t dst_handle = 0;
+        bool src_imported = false;
+        bool dst_imported = false;
 
-        int src_fmt = RK_FORMAT_YCbCr_420_SP;
-        int dst_fmt = RK_FORMAT_RGB_888;
-
-        RK_S32 fd = RK_MPI_MB_Handle2Fd(src_mb);
-        if (fd >= 0) {
-            src_handle = importbuffer_fd(fd, src_w, src_h, src_fmt);
-            if (src_handle != 0) {
-                use_fd = true;
-            }
+        src_handle = importbuffer_virtualaddr((void*)y_plane, src_w * src_h * 3 / 2);
+        if (src_handle != 0) {
+            src_imported = true;
         }
 
-        if (!use_fd) {
-            void* src_nv12 = RK_MPI_MB_Handle2VirAddr(src_mb);
-            src_handle = importbuffer_virtualaddr(src_nv12, src_w, src_h, src_fmt);
-        }
-
-        if (dst_use_dma && dst_mb != RK_NULL) {
-            RK_S32 dst_fd = RK_MPI_MB_Handle2Fd(dst_mb);
+        if (use_dma_dst && dst_mb) {
+            int dst_fd = RK_MPI_MB_Handle2Fd(dst_mb);
             if (dst_fd >= 0) {
-                dst_handle = importbuffer_fd(dst_fd, dst_w, dst_h, dst_fmt);
+                RK_U64 dst_size = RK_MPI_MB_GetSize(dst_mb);
+                dst_handle = importbuffer_fd(dst_fd, dst_size);
+                if (dst_handle != 0) {
+                    dst_imported = true;
+                }
             }
         }
-        if (dst_handle == 0) {
-            dst_handle = importbuffer_virtualaddr(dst_rgb, dst_w, dst_h, dst_fmt);
+
+        if (!dst_imported) {
+            dst_handle = importbuffer_virtualaddr(dst_rgb, dst_w * dst_h * 3);
+            if (dst_handle != 0) {
+                dst_imported = true;
+            }
         }
 
-        if (src_handle == 0 || dst_handle == 0) {
-            const uint8_t* y_plane = (const uint8_t*)RK_MPI_MB_Handle2VirAddr(src_mb);
-            const uint8_t* uv_plane = y_plane + src_w * src_h;
-            SoftwareNV12ToRGB(y_plane, uv_plane, src_w, src_h, src_w,
-                              dst_rgb, dst_w, dst_h);
-            if (src_handle) releasebuffer_handle(src_handle);
-            if (dst_handle) releasebuffer_handle(dst_handle);
-            return true;
+        if (src_imported && dst_imported) {
+            int ret = 0;
+
+            rga_info_t src_info;
+            rga_info_t dst_info;
+            memset(&src_info, 0, sizeof(src_info));
+            memset(&dst_info, 0, sizeof(dst_info));
+
+            src_info.hnd = src_handle;
+            src_info.virAddr = (void*)y_plane;
+            rga_set_rect(&src_info.rect, 0, 0, src_w, src_h, src_w, src_h, RK_FORMAT_YCbCr_420_SP);
+
+            dst_info.hnd = dst_handle;
+            dst_info.virAddr = (void*)dst_rgb;
+            rga_set_rect(&dst_info.rect, 0, 0, dst_w, dst_h, dst_w, dst_h, RK_FORMAT_RGB_888);
+
+            ret = c_RkRgaBlit(&src_info, &dst_info, NULL);
+
+            if (ret == 0) {
+                used_rga = true;
+                releasebuffer_handle(src_handle);
+                releasebuffer_handle(dst_handle);
+                return true;
+            }
         }
 
-        if (use_fd) {
-            src_img = wrapbuffer_fd(fd, src_w, src_h, src_fmt);
-        } else {
-            src_img = wrapbuffer_handle(src_handle, src_w, src_h, src_fmt);
-        }
-        if (dst_use_dma && dst_mb != RK_NULL) {
-            RK_S32 dst_fd = RK_MPI_MB_Handle2Fd(dst_mb);
-            dst_img = wrapbuffer_fd(dst_fd, dst_w, dst_h, dst_fmt);
-        } else {
-            dst_img = wrapbuffer_handle(dst_handle, dst_w, dst_h, dst_fmt);
-        }
-
-        ret = imcheck(src_img, dst_img, {}, {});
-        if (IM_STATUS_NOERROR != ret) {
-            std::cerr << "RGA imcheck failed: " << imStrError(ret) << std::endl;
-            goto release;
-        }
-
-        ret = imresize(src_img, dst_img);
-        if (ret != IM_STATUS_SUCCESS) {
-            std::cerr << "RGA imresize failed: " << imStrError(ret) << std::endl;
-            goto release;
-        }
-
-        ret = imcvtcolor(dst_img, dst_img, src_fmt, dst_fmt, IM_YUV_TO_RGB_BT601_FULL);
-        if (ret != IM_STATUS_SUCCESS) {
-            std::cerr << "RGA imcvtcolor failed: " << imStrError(ret) << std::endl;
-            goto release;
-        }
-
-        used_rga = true;
-        releasebuffer_handle(src_handle);
-        releasebuffer_handle(dst_handle);
-        return true;
-
-release:
         if (src_handle) releasebuffer_handle(src_handle);
         if (dst_handle) releasebuffer_handle(dst_handle);
-        const uint8_t* y_plane = (const uint8_t*)RK_MPI_MB_Handle2VirAddr(src_mb);
-        const uint8_t* uv_plane = y_plane + src_w * src_h;
+
         SoftwareNV12ToRGB(y_plane, uv_plane, src_w, src_h, src_w,
                           dst_rgb, dst_w, dst_h);
         return true;
@@ -461,60 +455,79 @@ release:
     void RunCamera(int frame_count) {
         std::cout << "Camera capture mode, " << frame_count << " frames" << std::endl;
 
-        VIDEO_FRAME_INFO_S stViFrame;
-        int timeout_ms = 2000;
         int success_count = 0;
         int fail_count = 0;
 
-        for (int i = 0; i < frame_count && running_; ++i) {
-            RK_S32 s32Ret = RK_MPI_VI_GetChnFrame(0, vi_chn_, &stViFrame, timeout_ms);
-            if (s32Ret != RK_SUCCESS) {
+        for (int i = 0; i < frame_count && running_; i++) {
+            struct v4l2_plane planes[VIDEO_MAX_PLANES];
+            struct v4l2_buffer buf;
+            memset(&buf, 0, sizeof(buf));
+            memset(planes, 0, sizeof(planes));
+
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.m.planes = planes;
+            buf.length = 1;
+
+            fd_set fds;
+            FD_ZERO(&fds);
+            FD_SET(camera_fd_, &fds);
+
+            struct timeval tv;
+            tv.tv_sec = 2;
+            tv.tv_usec = 0;
+
+            int ret = select(camera_fd_ + 1, &fds, NULL, NULL, &tv);
+            if (ret <= 0) {
+                std::cerr << "select timeout or error for frame " << i << std::endl;
                 fail_count++;
-                if (fail_count <= 5) {
-                    VI_CHN_STATUS_S chn_status;
-                    RK_S32 qret = RK_MPI_VI_QueryChnStatus(0, vi_chn_, &chn_status);
-                    if (qret == RK_SUCCESS) {
-                        std::cerr << "GetChnFrame failed (attempt " << fail_count << "), chn status: "
-                                  << "u32FrameRate=" << chn_status.u32FrameRate
-                                  << ", u32CurFrameID=" << chn_status.u32CurFrameID
-                                  << ", u32OutputLostFrame=" << chn_status.u32OutputLostFrame
-                                  << ", u32VbFail=" << chn_status.u32VbFail
-                                  << ", size=" << chn_status.stSize.u32Width << "x" << chn_status.stSize.u32Height << std::endl;
-                    }
-                }
                 continue;
             }
 
-            success_count++;
-            int src_w = stViFrame.stVFrame.u32Width;
-            int src_h = stViFrame.stVFrame.u32Height;
-            MB_BLK src_mb = stViFrame.stVFrame.pMbBlk;
-            RK_U32 pix_fmt = stViFrame.stVFrame.enPixelFormat;
-            RK_U32 frame_size = RK_MPI_MB_GetSize(src_mb);
-            RK_S32 mb_fd = RK_MPI_MB_Handle2Fd(src_mb);
-
-            if (success_count == 1) {
-                std::cout << "First frame info: " << src_w << "x" << src_h
-                          << ", fmt=0x" << std::hex << pix_fmt << std::dec
-                          << ", size=" << frame_size
-                          << ", fd=" << mb_fd << std::endl;
+            if (ioctl(camera_fd_, VIDIOC_DQBUF, &buf) < 0) {
+                std::cerr << "Failed to dequeue buffer for frame " << i << ", errno: " << errno << std::endl;
+                fail_count++;
+                continue;
             }
 
+            uint8_t* nv12_data = (uint8_t*)buffers_[buf.index].start;
+            int src_w = camera_width_;
+            int src_h = camera_height_;
+
             bool used_rga = false;
-            bool ok = ConvertNV12ToRGBWithResize(src_mb, src_w, src_h,
+            bool ok = ConvertNV12ToRGBWithResize(nv12_data, src_w, src_h,
                                                 rgb_mb_, rgb_buf_,
                                                 MODEL_WIDTH, MODEL_HEIGHT,
                                                 rgb_use_dma_, used_rga);
 
-            RK_MPI_VI_ReleaseChnFrame(0, vi_chn_, &stViFrame);
+            if (success_count == 1) {
+                const uint8_t* y_plane = nv12_data;
+                const uint8_t* uv_plane = nv12_data + src_w * src_h;
+                SaveNV12("raw_nv12_frame.yuv", y_plane, uv_plane, src_w, src_h);
+                std::cout << "Saved raw NV12 frame: " << src_w << "x" << src_h << std::endl;
+            }
+
+            if (ioctl(camera_fd_, VIDIOC_QBUF, &buf) < 0) {
+                std::cerr << "Failed to re-queue buffer " << buf.index << std::endl;
+            }
 
             if (!ok) {
-                std::cerr << "RGA conversion failed for frame " << i << std::endl;
+                std::cerr << "Conversion failed for frame " << i << std::endl;
+                fail_count++;
                 continue;
             }
 
+            success_count++;
+
             if (success_count == 1) {
                 std::cout << "Conversion mode: " << (used_rga ? "RGA HARDWARE" : "SOFTWARE FALLBACK") << std::endl;
+            }
+
+            if (success_count <= 5) {
+                std::stringstream ss;
+                ss << "camera_frame_" << std::setw(6) << std::setfill('0') << success_count << ".png";
+                SavePNG(ss.str(), rgb_buf_, MODEL_WIDTH, MODEL_HEIGHT);
+                std::cout << "Saved frame " << success_count << " to " << ss.str() << std::endl;
             }
 
             int data_size = MODEL_WIDTH * MODEL_HEIGHT * 3;
@@ -525,37 +538,37 @@ release:
             }
 
             ImageFrame* frame = sample.message;
-            frame->timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+            frame->timestamp = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
             frame->width = MODEL_WIDTH;
             frame->height = MODEL_HEIGHT;
             frame->format = 0;
             frame->stride = MODEL_WIDTH * 3;
-
             frame->data.resize(data_size);
             memcpy(frame->data.data(), rgb_buf_, data_size);
 
-            if (i % 30 == 0) {
-                std::cout << "Frame " << i << " sent: "
-                          << frame->width << "x" << frame->height
-                          << " (RK MPI + RGA)" << std::endl;
-            }
-            if (!writer_->Write(sample)) {
-                std::cerr << "Failed to write frame " << i << std::endl;
-                writer_->Release(sample);
-            }
-
+            writer_->Write(sample);
             frame_id_++;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
         }
 
-        std::cout << "Camera capture done: " << success_count << " success, "
-                  << fail_count << " failed" << std::endl;
+        std::cout << "Camera capture done: " << success_count << " success, " << fail_count << " failed" << std::endl;
     }
 
     void RunSimulated(int frame_count) {
         std::cout << "Simulated mode, " << frame_count << " frames" << std::endl;
+        std::mt19937 gen(42);
+        std::uniform_int_distribution<int> dist(0, 255);
+        int data_size = MODEL_WIDTH * MODEL_HEIGHT * 3;
+        uint8_t* img = new uint8_t[data_size];
 
-        for (int i = 0; i < frame_count && running_; ++i) {
-            int32_t data_size = MODEL_WIDTH * MODEL_HEIGHT * 3;
+        for (int i = 0; i < frame_count && running_; i++) {
+            for (int j = 0; j < data_size; j += 3) {
+                img[j] = dist(gen);
+                img[j + 1] = dist(gen);
+                img[j + 2] = dist(gen);
+            }
 
             Sample<ImageFrame> sample = writer_->LoanSample(sizeof(ImageFrame) + data_size);
             if (!sample.IsValid()) {
@@ -564,47 +577,33 @@ release:
             }
 
             ImageFrame* frame = sample.message;
-            frame->timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+            frame->timestamp = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
             frame->width = MODEL_WIDTH;
             frame->height = MODEL_HEIGHT;
             frame->format = 0;
             frame->stride = MODEL_WIDTH * 3;
-
             frame->data.resize(data_size);
-            for (size_t j = 0; j < data_size; j += 3) {
-                frame->data[j] = static_cast<uint8_t>((i * 10 + j) % 256);
-                frame->data[j + 1] = static_cast<uint8_t>((i * 5 + j * 2) % 256);
-                frame->data[j + 2] = static_cast<uint8_t>((i * 3 + j * 3) % 256);
-            }
+            memcpy(frame->data.data(), img, data_size);
 
-            if (i % 10 == 0) {
-                std::cout << "Frame " << i << " sent: "
-                          << frame->width << "x" << frame->height << std::endl;
-            }
-            if (!writer_->Write(sample)) {
-                std::cerr << "Failed to write frame " << i << std::endl;
-                writer_->Release(sample);
-            }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            writer_->Write(sample);
             frame_id_++;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
         }
+
+        delete[] img;
+        std::cout << "Simulated capture done: " << frame_count << " frames" << std::endl;
     }
 
-    std::unique_ptr<Node> node_;
+    std::shared_ptr<Node> node_;
     std::shared_ptr<Writer<ImageFrame>> writer_;
     bool running_;
-    int frame_id_;
+    uint64_t frame_id_;
 
-    bool use_camera_;
-    int camera_width_;
-    int camera_height_;
-
-    bool isp_inited_;
-    bool mpi_inited_;
-    bool vi_inited_;
-    int vi_chn_;
-    MB_POOL mb_pool_;
+    int camera_fd_;
+    V4L2Buffer* buffers_;
+    int buffer_count_;
 
     bool rga_inited_;
     uint8_t* rgb_buf_;
@@ -612,44 +611,44 @@ release:
     MB_BLK rgb_mb_;
     MB_POOL rgb_pool_;
     bool rgb_use_dma_;
+
+    bool use_camera_;
+    int camera_width_;
+    int camera_height_;
+    bool isp_inited_;
 };
 
+static ImageCaptureNode* g_node = nullptr;
+
+void signal_handler(int sig) {
+    if (g_node) {
+        g_node->Stop();
+    }
+}
+
 int main(int argc, char** argv) {
-    ImageCaptureNode node;
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
 
     bool use_camera = true;
     int frame_count = 100;
-    int camera_width = 720;
-    int camera_height = 480;
 
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--sim" || arg == "-s") {
-            use_camera = false;
-        } else if (arg == "--width") {
-            if (i + 1 < argc) {
-                camera_width = std::stoi(argv[++i]);
-            }
-        } else if (arg == "--height") {
-            if (i + 1 < argc) {
-                camera_height = std::stoi(argv[++i]);
-            }
-        } else {
-            frame_count = std::stoi(arg);
-        }
+    if (argc >= 2) {
+        frame_count = std::atoi(argv[1]);
     }
 
-    if (use_camera) {
-        system("/oem/usr/bin/RkLunch-stop.sh");
-        sleep(1);
+    if (argc >= 3 && std::string(argv[2]) == "--sim") {
+        use_camera = false;
     }
 
-    if (!node.Init(use_camera, camera_width, camera_height)) {
-        return -1;
+    g_node = new ImageCaptureNode();
+    if (!g_node->Init(use_camera)) {
+        std::cerr << "Failed to initialize image capture node" << std::endl;
+        delete g_node;
+        return 1;
     }
 
-    node.Run(frame_count);
-    node.Shutdown();
-
+    g_node->Run(frame_count);
+    delete g_node;
     return 0;
 }

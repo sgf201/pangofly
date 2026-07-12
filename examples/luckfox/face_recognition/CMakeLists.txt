@@ -135,6 +135,7 @@ target_link_libraries(image_capture_node
     rkaiq
     rockiva
     rga
+    ${OpenCV_LIBS}
     pthread
     rt
     dl
