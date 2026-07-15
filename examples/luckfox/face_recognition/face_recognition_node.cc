@@ -14,6 +14,8 @@
 #include "opencv2/core/core.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
 
+#include "rknn_box_priors.h"
+
 using namespace pangofly;
 using namespace FaceDetection;
 
@@ -220,109 +222,157 @@ private:
         }
     }
 
-    int clamp(float x, int min, int max) {
+    static float deqnt_affine_to_f32(int8_t qnt, int32_t zp, float scale) {
+        return ((float)qnt - (float)zp) * scale;
+    }
+
+    static int clamp(float x, int min, int max) {
         if (x > max) return max;
         if (x < min) return min;
         return (int)x;
     }
 
+    static float CalculateOverlap(float xmin0, float ymin0, float xmax0, float ymax0,
+                                  float xmin1, float ymin1, float xmax1, float ymax1) {
+        float w = fmaxf(0.f, fminf(xmax0, xmax1) - fmaxf(xmin0, xmin1) + 1);
+        float h = fmaxf(0.f, fminf(ymax0, ymax1) - fmaxf(ymin0, ymin1) + 1);
+        float i = w * h;
+        float u = (xmax0 - xmin0 + 1) * (ymax0 - ymin0 + 1) + (xmax1 - xmin1 + 1) * (ymax1 - ymin1 + 1) - i;
+        return u <= 0.f ? 0.f : (i / u);
+    }
+
+    static void quick_sort_indice_inverse(float* input, int left, int right, int* indices) {
+        float key;
+        int key_index;
+        int low = left;
+        int high = right;
+        if (left < right) {
+            key_index = indices[left];
+            key = input[left];
+            while (low < high) {
+                while (low < high && input[high] <= key) {
+                    high--;
+                }
+                input[low] = input[high];
+                indices[low] = indices[high];
+                while (low < high && input[low] >= key) {
+                    low++;
+                }
+                input[high] = input[low];
+                indices[high] = indices[low];
+            }
+            input[low] = key;
+            indices[low] = key_index;
+            quick_sort_indice_inverse(input, left, low - 1, indices);
+            quick_sort_indice_inverse(input, low + 1, right, indices);
+        }
+    }
+
+    static int nms(int validCount, float* outputLocations, int order[], float threshold, int width, int height) {
+        for (int i = 0; i < validCount; ++i) {
+            if (order[i] == -1) continue;
+            int n = order[i];
+            for (int j = i + 1; j < validCount; ++j) {
+                int m = order[j];
+                if (m == -1) continue;
+                float xmin0 = outputLocations[n * 4 + 0] * width;
+                float ymin0 = outputLocations[n * 4 + 1] * height;
+                float xmax0 = outputLocations[n * 4 + 2] * width;
+                float ymax0 = outputLocations[n * 4 + 3] * height;
+                float xmin1 = outputLocations[m * 4 + 0] * width;
+                float ymin1 = outputLocations[m * 4 + 1] * height;
+                float xmax1 = outputLocations[m * 4 + 2] * width;
+                float ymax1 = outputLocations[m * 4 + 3] * height;
+                float iou = CalculateOverlap(xmin0, ymin0, xmax0, ymax0, xmin1, ymin1, xmax1, ymax1);
+                if (iou > threshold) {
+                    order[j] = -1;
+                }
+            }
+        }
+        return 0;
+    }
+
     int detect_faces(const cv::Mat& image, face_box_t* faces, int max_faces) {
         if (image.empty()) return 0;
 
-        // Image is already model size (640x640), copy directly to input buffer (BGR format)
         memcpy(rknn_ctx.input_mems[0]->virt_addr, image.data, rknn_ctx.model_width * rknn_ctx.model_height * 3);
 
-        // Run inference
         int ret = rknn_run(rknn_ctx.rknn_ctx, nullptr);
         if (ret < 0) {
             std::cerr << "rknn_run fail! ret=" << ret << std::endl;
             return 0;
         }
 
-        // Get outputs
         uint8_t* location = (uint8_t*)(rknn_ctx.output_mems[0]->virt_addr);
         uint8_t* scores = (uint8_t*)(rknn_ctx.output_mems[1]->virt_addr);
 
-        // Dequantization parameters
+        const float (*prior_ptr)[4] = BOX_PRIORS_640;
+        int num_priors = 16800;
+
         int loc_zp = rknn_ctx.output_attrs[0].zp;
         float loc_scale = rknn_ctx.output_attrs[0].scale;
         int scores_zp = rknn_ctx.output_attrs[1].zp;
         float scores_scale = rknn_ctx.output_attrs[1].scale;
 
         const float VARIANCES[2] = {0.1, 0.2};
-        const float (*prior_ptr)[4];
-        int num_priors = 16800;
-        
-        // Simplified: use hardcoded box priors for 640x640
-        static float priors[16800][4];
-        static bool priors_init = false;
-        if (!priors_init) {
-            // Generate priors (simplified)
-            float steps[3] = {8.0f, 16.0f, 32.0f};
-            float min_sizes[3][2] = {{16, 32}, {64, 128}, {256, 512}};
-            int idx = 0;
-            for (int s = 0; s < 3; s++) {
-                int fm_w = (int)(640.0f / steps[s]);
-                int fm_h = (int)(640.0f / steps[s]);
-                for (int y = 0; y < fm_h; y++) {
-                    for (int x = 0; x < fm_w; x++) {
-                        for (int k = 0; k < 2; k++) {
-                            float cx = (x + 0.5f) * steps[s] / 640.0f;
-                            float cy = (y + 0.5f) * steps[s] / 640.0f;
-                            float w = min_sizes[s][k] / 640.0f;
-                            float h = min_sizes[s][k] / 640.0f;
-                            priors[idx][0] = cx - w/2;
-                            priors[idx][1] = cy - h/2;
-                            priors[idx][2] = w;
-                            priors[idx][3] = h;
-                            idx++;
-                        }
-                    }
-                }
-            }
-            priors_init = true;
-        }
-        prior_ptr = priors;
 
-        float loc_fp32[num_priors * 4];
-        int valid_count = 0;
+        int filter_indices[16800];
+        float props[16800];
+        float loc_fp32[16800 * 4];
+        memset(loc_fp32, 0, sizeof(loc_fp32));
+        memset(filter_indices, 0, sizeof(filter_indices));
+        memset(props, 0, sizeof(props));
 
-        // Process detections
-        for (int i = 0; i < num_priors && valid_count < max_faces; i++) {
-            float face_score = ((float)scores[i*2+1] - (float)scores_zp) * scores_scale;
-            if (face_score > 0.5) {
+        int validCount = 0;
+
+        for (int i = 0; i < num_priors; i++) {
+            float face_score = deqnt_affine_to_f32((int8_t)scores[i * 2 + 1], scores_zp, scores_scale);
+            if (face_score > 0.5f) {
+                filter_indices[validCount] = i;
+                props[validCount] = face_score;
                 int offset = i * 4;
-                float box_x = (((float)location[offset] - (float)loc_zp) * loc_scale) * VARIANCES[0] * prior_ptr[i][2] + prior_ptr[i][0];
-                float box_y = (((float)location[offset+1] - (float)loc_zp) * loc_scale) * VARIANCES[0] * prior_ptr[i][3] + prior_ptr[i][1];
-                float box_w = expf(((float)location[offset+2] - (float)loc_zp) * loc_scale * VARIANCES[1]) * prior_ptr[i][2];
-                float box_h = expf(((float)location[offset+3] - (float)loc_zp) * loc_scale * VARIANCES[1]) * prior_ptr[i][3];
+                uint8_t* bbox = location + offset;
+
+                float box_x = deqnt_affine_to_f32((int8_t)bbox[0], loc_zp, loc_scale) * VARIANCES[0] * prior_ptr[i][2] + prior_ptr[i][0];
+                float box_y = deqnt_affine_to_f32((int8_t)bbox[1], loc_zp, loc_scale) * VARIANCES[0] * prior_ptr[i][3] + prior_ptr[i][1];
+                float box_w = expf(deqnt_affine_to_f32((int8_t)bbox[2], loc_zp, loc_scale) * VARIANCES[1]) * prior_ptr[i][2];
+                float box_h = expf(deqnt_affine_to_f32((int8_t)bbox[3], loc_zp, loc_scale) * VARIANCES[1]) * prior_ptr[i][3];
 
                 float xmin = box_x - box_w * 0.5f;
                 float ymin = box_y - box_h * 0.5f;
                 float xmax = xmin + box_w;
                 float ymax = ymin + box_h;
 
-                loc_fp32[offset] = xmin;
-                loc_fp32[offset+1] = ymin;
-                loc_fp32[offset+2] = xmax;
-                loc_fp32[offset+3] = ymax;
-                valid_count++;
+                loc_fp32[offset + 0] = xmin;
+                loc_fp32[offset + 1] = ymin;
+                loc_fp32[offset + 2] = xmax;
+                loc_fp32[offset + 3] = ymax;
+
+                ++validCount;
             }
         }
 
-        // Convert to absolute coordinates
+        if (validCount == 0) return 0;
+
+        quick_sort_indice_inverse(props, 0, validCount - 1, filter_indices);
+        nms(validCount, loc_fp32, filter_indices, 0.2f, rknn_ctx.model_width, rknn_ctx.model_height);
+
         int face_count = 0;
-        for (int i = 0; i < num_priors && face_count < max_faces; i++) {
-            float face_score = ((float)scores[i*2+1] - (float)scores_zp) * scores_scale;
-            if (face_score > 0.5) {
-                int offset = i * 4;
-                faces[face_count].left = clamp(loc_fp32[offset] * rknn_ctx.model_width, 0, rknn_ctx.model_width);
-                faces[face_count].top = clamp(loc_fp32[offset+1] * rknn_ctx.model_height, 0, rknn_ctx.model_height);
-                faces[face_count].right = clamp(loc_fp32[offset+2] * rknn_ctx.model_width, 0, rknn_ctx.model_width);
-                faces[face_count].bottom = clamp(loc_fp32[offset+3] * rknn_ctx.model_height, 0, rknn_ctx.model_height);
-                faces[face_count].score = face_score;
-                face_count++;
-            }
+        for (int i = 0; i < validCount && face_count < max_faces; ++i) {
+            if (filter_indices[i] == -1 || props[i] < 0.5f) continue;
+
+            int n = filter_indices[i];
+            float x1 = loc_fp32[n * 4 + 0] * rknn_ctx.model_width;
+            float y1 = loc_fp32[n * 4 + 1] * rknn_ctx.model_height;
+            float x2 = loc_fp32[n * 4 + 2] * rknn_ctx.model_width;
+            float y2 = loc_fp32[n * 4 + 3] * rknn_ctx.model_height;
+
+            faces[face_count].left = clamp(x1, 0, rknn_ctx.model_width);
+            faces[face_count].top = clamp(y1, 0, rknn_ctx.model_height);
+            faces[face_count].right = clamp(x2, 0, rknn_ctx.model_width);
+            faces[face_count].bottom = clamp(y2, 0, rknn_ctx.model_height);
+            faces[face_count].score = props[i];
+            face_count++;
         }
 
         return face_count;
