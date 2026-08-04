@@ -4,12 +4,13 @@
 #include <memory>
 #include <string>
 #include <cstring>
+#include <unordered_map>
 
 #include "core/node/writer.h"
 
 #include "core/transport/shm/posix_segment.h"
-#include "idl/container/vector.h"
 #include "idl/allocator/block_allocator.h"
+
 #define PANGOFLY_SEGMENT_TYPE transport::PosixSegment
 
 namespace pangofly {
@@ -34,31 +35,28 @@ public:
   ~ShmWriter() override = default;
 
   bool Write(const MessageT& message) override {
-    MessageInfo info;
-    return Write(message, info);
+    size_t expected = message.CalculateSize() + 1024;
+    Sample<MessageT> sample = LoanSample(expected);
+    if (!sample.IsValid()) {
+      return false;
+    }
+    *sample.message = message;
+    return Write(sample);
   }
 
   bool Write(const MessageT& message, const MessageInfo& message_info) override {
-    size_t total_size = calculate_message_size(message);
-
-    transport::WritableBlock block;
-    if (!segment_->AcquireBlockToWrite(total_size, &block)) {
-      return false;
-    }
-
-    uint8_t* shm_base = reinterpret_cast<uint8_t*>(block.buf);
-    size_t offset = 0;
-
-    offset = serialize_to_shm(message, shm_base, offset);
-
-    if (block.block != nullptr) {
-      block.block->set_msg_size(total_size);
-    }
-
-    segment_->ReleaseWrittenBlock(block);
-    return true;
+    (void)message_info;
+    return Write(message);
   }
 
+  // Loan a sample from shared memory.
+  //
+  // A BlockAllocator is initialized in the region right after the MessageT
+  // object, wrapped by a ShmResource (pmr::memory_resource) and bound as the
+  // thread-local CurrentAllocator via ScopedAllocator. As a result the default
+  // constructor of MessageT (and any nested PMR containers) will automatically
+  // allocate their internal buffers from shared memory without the caller
+  // having to pass an allocator explicitly.
   Sample<MessageT> LoanSample(size_t expected_size = 0) override {
     size_t alloc_size = expected_size > 0 ? expected_size : sizeof(MessageT) + 1024;
 
@@ -70,13 +68,22 @@ public:
     uint8_t* shm_base = reinterpret_cast<uint8_t*>(block.buf);
 
     BlockAllocator* allocator = new BlockAllocator();
-    allocator->initialize_from_buffer(shm_base + sizeof(MessageT), alloc_size - sizeof(MessageT));
+    allocator->initialize_from_buffer(shm_base + sizeof(MessageT),
+                                      alloc_size - sizeof(MessageT));
 
-    MessageT* message = reinterpret_cast<MessageT*>(shm_base);
-    new (message) MessageT(allocator);
+    Sample<MessageT> sample;
+    sample.message = reinterpret_cast<MessageT*>(shm_base);
+    sample.allocator = allocator;
+    sample.shm_block = block.block;
+    sample.shm_size = alloc_size;
+    sample.shm_resource = std::make_unique<ShmResource>(allocator);
+    // Bind the shared memory resource as the current allocator so that the
+    // default constructor of MessageT picks it up automatically.
+    sample.scope = std::make_unique<ScopedAllocator>(sample.resource());
 
-    Sample<MessageT> sample(message, allocator, block.block, alloc_size);
-    loaned_blocks_[message] = block;
+    new (sample.message) MessageT();
+
+    loaned_blocks_[sample.message] = block;
 
     return sample;
   }
@@ -93,10 +100,17 @@ public:
 
     transport::WritableBlock& block = it->second;
 
-    size_t actual_size = sample.message->CalculateSize();
+    // Destroy the message (and its PMR containers) while the scope is still
+    // active, so any allocator-dependent cleanup sees the correct resource.
+    if (sample.message) {
+      sample.message->~MessageT();
+    }
+
+    sample.scope.reset();
+    sample.shm_resource.reset();
 
     if (block.block != nullptr) {
-      block.block->set_msg_size(actual_size);
+      block.block->set_msg_size(sample.shm_size);
     }
 
     segment_->ReleaseWrittenBlock(block);
@@ -104,6 +118,7 @@ public:
 
     delete sample.allocator;
     sample.allocator = nullptr;
+    sample.message = nullptr;
     sample.shm_block = nullptr;
 
     return true;
@@ -120,6 +135,13 @@ public:
       loaned_blocks_.erase(it);
     }
 
+    if (sample.message) {
+      sample.message->~MessageT();
+    }
+
+    sample.scope.reset();
+    sample.shm_resource.reset();
+
     if (sample.allocator) {
       delete sample.allocator;
       sample.allocator = nullptr;
@@ -134,41 +156,6 @@ public:
   }
 
 private:
-  size_t calculate_message_size(const MessageT& message) {
-    return message.CalculateSize();
-  }
-
-  size_t serialize_to_shm(const MessageT& message, uint8_t* shm_base, size_t offset) {
-    const uint8_t* msg_ptr = reinterpret_cast<const uint8_t*>(&message);
-    size_t struct_size = sizeof(MessageT);
-
-    memcpy(shm_base, msg_ptr, struct_size);
-    offset = struct_size;
-
-    for (size_t i = 0; i < struct_size; i += sizeof(uintptr_t)) {
-      uintptr_t vec_ptr = *reinterpret_cast<const uintptr_t*>(msg_ptr + i);
-      if (vec_ptr != 0) {
-        const Vector<uint8_t>* vec = reinterpret_cast<const Vector<uint8_t>*>(msg_ptr + i);
-        size_t data_size = vec->size();
-
-        Vector<uint8_t>* shm_vec = reinterpret_cast<Vector<uint8_t>*>(shm_base + i);
-        shm_vec->~Vector();
-        new (shm_vec) Vector<uint8_t>();
-
-        if (data_size > 0) {
-          memcpy(shm_base + offset, vec->data(), data_size);
-          uint8_t* data_ptr = shm_base + offset;
-          new (shm_vec) Vector<uint8_t>(data_ptr, data_size);
-          offset += data_size;
-        } else {
-          new (shm_vec) Vector<uint8_t>();
-        }
-      }
-    }
-
-    return offset;
-  }
-
   std::string channel_name_;
   std::shared_ptr<PANGOFLY_SEGMENT_TYPE> segment_;
   std::unordered_map<MessageT*, transport::WritableBlock> loaned_blocks_;
