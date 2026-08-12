@@ -59,8 +59,7 @@ std::string CodeGenerator::generate_includes() {
            "#include <memory>\n"
            "#include <string>\n"
            "#include <array>\n"
-           "#include \"core/memory/pmr.h\"\n"
-           "#include \"core/memory/allocator.h\"\n";
+           "#include \"core/memory/shm_allocator.h\"\n";
 }
 
 std::string CodeGenerator::generate_namespace_open(const std::string& ns) {
@@ -91,51 +90,10 @@ std::string CodeGenerator::generate_struct(const Struct& s) {
     }
     
     oss << "\n";
-    // Default constructor: PMR containers get resource from CurrentAllocator
-    {
-        bool has_pmr = false;
-        std::string init_list;
-        bool first = true;
-        for (const auto& field : s.fields) {
-            if (field.type->is_vector() || field.type->is_string()) {
-                if (!first) init_list += ", ";
-                init_list += field.name + "(pangofly::CurrentAllocator::resource())";
-                first = false;
-                has_pmr = true;
-            }
-        }
-        if (has_pmr) {
-            oss << "    " << struct_name << "() : " << init_list << " {\n";
-        } else {
-            oss << "    " << struct_name << "() {\n";
-        }
-    }
-    for (const auto& field : s.fields) {
-        if (field.type->is_primitive()) {
-            oss << "        " << field.name << " = 0;\n";
-        }
-    }
-    oss << "    }\n";
-    oss << "\n";
-    // Explicit constructor: specify memory_resource directly
-    {
-        bool has_pmr = false;
-        std::string init_list;
-        bool first = true;
-        for (const auto& field : s.fields) {
-            if (field.type->is_vector() || field.type->is_string()) {
-                if (!first) init_list += ", ";
-                init_list += field.name + "(r)";
-                first = false;
-                has_pmr = true;
-            }
-        }
-        if (has_pmr) {
-            oss << "    explicit " << struct_name << "(pangofly::pmr::memory_resource* r) : " << init_list << " {\n";
-        } else {
-            oss << "    explicit " << struct_name << "(pangofly::pmr::memory_resource* /*r*/) {\n";
-        }
-    }
+    // Default constructor.
+    // ShmAllocator's default ctor captures CurrentAllocator::resource()
+    // automatically, so no explicit initializer list is needed.
+    oss << "    " << struct_name << "() {\n";
     for (const auto& field : s.fields) {
         if (field.type->is_primitive()) {
             oss << "        " << field.name << " = 0;\n";
@@ -191,16 +149,16 @@ std::string CodeGenerator::generate_type_name(const Type& t) {
         case TypeKind::PRIMITIVE_FLOAT32: return "float";
         case TypeKind::PRIMITIVE_FLOAT64: return "double";
         case TypeKind::USER_DEF:          return t.name;
-        case TypeKind::STRING:            return "pangofly::pmr::string";
+        case TypeKind::STRING:            return "pangofly::shm_string";
         case TypeKind::VECTOR: {
             try {
                 const VectorType& vec_type = dynamic_cast<const VectorType&>(t);
                 if (vec_type.element_type) {
-                    return "pangofly::pmr::vector<" +
+                    return "pangofly::shm_vector<" +
                            generate_type_name(*vec_type.element_type) + ">";
                 }
             } catch (const std::bad_cast&) {}
-            return "pangofly::pmr::vector<void>";
+            return "pangofly::shm_vector<void>";
         }
         case TypeKind::FIXED_ARRAY: {
             try {
