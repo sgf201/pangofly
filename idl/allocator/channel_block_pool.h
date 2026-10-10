@@ -46,7 +46,7 @@ public:
         
         uint8_t* block_memory = pool_memory_ + pool_header_size;
         
-        pool_->free_list = nullptr;
+        pool_->free_list.store(nullptr);
         for (size_t i = 0; i < num_blocks; ++i) {
             BlockHeader* block = reinterpret_cast<BlockHeader*>(
                 block_memory + i * block_size
@@ -57,14 +57,15 @@ public:
             block->used_size = 0;
             block->status.store(BLOCK_FREE);
             
-            block->next = pool_->free_list;
+            BlockHeader* current_free_list = pool_->free_list.load();
+            block->next = current_free_list;
             block->prev = nullptr;
             
-            if (pool_->free_list) {
-                pool_->free_list->prev = block;
+            if (current_free_list) {
+                current_free_list->prev = block;
             }
             
-            pool_->free_list = block;
+            pool_->free_list.store(block);
         }
         
         return true;
