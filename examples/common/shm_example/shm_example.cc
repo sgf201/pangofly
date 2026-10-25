@@ -97,5 +97,46 @@ int main() {
     ++loaned;
   }
   std::printf("stage3 loaned=%d (expect %u)\n", loaned, n);
+
+  // 阶段 4：keep_last——收端最多保留 history 条
+  // 新建一个 history=2 的通道，连发 5 条后只应能读到最新的 2 条。
+  {
+    pangofly::shm::SegmentConfig cfg;
+    cfg.block_num = 6;
+    cfg.block_capacity = 1u << 20;
+    cfg.history = 2;
+    auto hw = node->CreateWriter<example::ImageFrame>("history_channel", cfg);
+    auto hr = node->CreateReader<example::ImageFrame>("history_channel", cfg);
+    if (!hw || !hr) {
+      std::fprintf(stderr, "history channel create failed\n");
+      return 1;
+    }
+    std::printf("stage4 history=%u block_num=%u\n", hw->History(), hw->BlockNum());
+
+    for (int i = 1; i <= 5; ++i) {
+      auto s = hw->Loan();
+      if (!s.valid()) {
+        std::fprintf(stderr, "stage4 Loan failed at %d\n", i);
+        return 1;
+      }
+      Fill(s.get(), i);
+      if (!hw->Publish(std::move(s))) return 1;
+    }
+
+    int kept = 0;
+    int64_t first_ts = -1;
+    while (true) {
+      auto v = hr->Acquire();
+      if (!v.valid()) break;
+      if (first_ts < 0) first_ts = v->timestamp_ns;
+      ++kept;
+    }
+    // 期望：只读到 2 条，且是最新的 ts=4、5
+    const bool ok = (kept == 2 && first_ts == 4);
+    std::printf("stage4 kept=%d first_ts=%lld (expect 2 / 4) -> %s\n", kept,
+                static_cast<long long>(first_ts), ok ? "PASS" : "FAIL");
+    if (!ok) return 1;
+  }
+
   return loaned == static_cast<int>(n) ? 0 : 1;
 }

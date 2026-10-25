@@ -6,7 +6,7 @@
 
 | 程序 | 作用 |
 |------|------|
-| `shm_example` | 单进程自测：写满所有块 → 逐条读回 → 校验内容 → 再写一轮 |
+| `shm_example` | 单进程自测：写满所有块 → 逐条读回 → 校验内容 → 再写一轮 → 验证 keep_last |
 | `shm_writer` | 写端：直接在共享内存里构造 `ImageFrame`（含 `shm::vector` 像素与检测框） |
 | `shm_reader` | 读端：直接读共享内存中的对象，打印消息指针以核对同地址映射 |
 | `shm_thread_pipeline` | 跨线程：线程 A 只 `Loan`，线程 B 填充并 `Publish` |
@@ -65,3 +65,24 @@ writer->Publish(std::move(s));     // 只翻状态位
 - 唯一的构造函数接收 `shm::Arena&`
 - 容器成员从该 arena 分配
 - 用 `PANGOFLY_SHM_MESSAGE(Type)` 声明类型可用于共享内存
+
+### keep_last：限制收端保留的条数
+
+`SegmentConfig::history` 控制收端最多能拿到多少条未消费消息：
+
+```cpp
+pangofly::shm::SegmentConfig cfg;
+cfg.block_num = 6;
+cfg.history = 2;                       // 收端最多保留最新 2 条
+auto w = node->CreateWriter<Msg>("ch", cfg);
+auto r = node->CreateReader<Msg>("ch", cfg);
+```
+
+- `history = 0`（默认）不限，写端只在借不到空块时才回收最旧块
+- `history > 0` 时，`Publish` 后立刻把超出数量的最旧块降级为 `FREE`，
+  收端因此只会看到最新的 N 条
+- 生效值写入段头，`writer->History()` / `reader->History()` 可查询；
+  收端不需要重复声明 block 配置
+
+`shm_example` 的第 4 阶段就是这项验证：`history=2`、连发 5 条，
+断言只能读到 2 条且首条 `timestamp_ns == 4`。

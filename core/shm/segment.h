@@ -41,6 +41,13 @@ constexpr uint32_t kSegmentVersion = 2;
 struct SegmentConfig {
   uint32_t block_num = 4;
   uint32_t block_capacity = 1u << 20;   // 每块 arena 可用字节
+
+  // keep_last(history)：收端最多保留的最新消息块数。
+  //   * 0（默认）= 不限，等价于 block_num，写端只在借不到空块时才回收最旧块
+  //   * N > 0      = 已发布块超过 N 时，写端在 Publish 里立刻丢弃最旧的，
+  //                  收端因此最多看到 N 条未消费消息（超出部分被覆盖）
+  // 取值会被 clamp 到 [1, block_num]。
+  uint32_t history = 0;
 };
 
 struct alignas(64) SegmentHeader {
@@ -53,6 +60,7 @@ struct alignas(64) SegmentHeader {
   uint64_t self_base;         // 创建者映射到的虚拟地址（地址握手）
   std::atomic<uint64_t> next_seq;
   uint32_t payload_base;      // 第一个 chunk 相对段首的偏移
+  uint32_t history;           // keep_last 生效值（0 = 不限）
   uint32_t reserved;
 };
 
@@ -112,6 +120,8 @@ class Segment {
   bool valid() const noexcept { return header_ != nullptr; }
   uint32_t BlockNum() const noexcept { return header_ ? header_->block_num : 0; }
   uint32_t BlockCapacity() const noexcept { return header_ ? header_->block_capacity : 0; }
+  // keep_last 生效值：收端最多保留的未消费消息块数（0 表示不限）
+  uint32_t History() const noexcept { return header_ ? header_->history : 0; }
   uintptr_t BaseAddress() const noexcept { return reinterpret_cast<uintptr_t>(base_); }
   const std::string& channel() const noexcept { return channel_; }
 
@@ -122,6 +132,13 @@ class Segment {
   const BlockHeader* HeaderAt(uint32_t i) const;
   static size_t CalcArenaBytes(const SegmentConfig& cfg);
   static size_t CalcTotalSize(const SegmentConfig& cfg);
+
+  // keep_last：已发布块超过 history 时丢弃最旧的（不含刚发布的块）
+  void EvictBeyondHistory();
+
+  // 把块标记为可复用并回收其 arena。调用方必须已持有该块的 BlockGuard，
+  // 且已确认 state == PUBLISHED、readers == 0。
+  void RecycleLocked(BlockHeader* b, uint32_t new_state);
 
   void* base_ = nullptr;
   size_t total_size_ = 0;

@@ -351,10 +351,39 @@ use(v->points);                   // RAII 视图，析构自动归还
 ```
 
 `Sample<T>` 是写端借据：未 `Publish` 就析构会自动 `Abort`，不会泄漏块。
-`View<T>` 是读端视图：构造 `readers++`，析构 `readers--`，归零归还块。
+`View<T>` 是读端视图：构造 `readers++`，析构 `readers--`。
 
 `Node` 按 channel 在进程内复用同一个 `Segment`，保证同一进程里多个
 writer/reader 映射到同一地址。
+
+### 9.1 keep_last(history)
+
+`SegmentConfig::history` 控制收端最多能保留多少条未消费消息：
+
+```cpp
+pangofly::shm::SegmentConfig cfg;
+cfg.block_num = 6;
+cfg.history = 2;                 // 收端最多看到最新 2 条
+auto w = node->CreateWriter<Msg>("ch", cfg);
+```
+
+| 取值 | 行为 |
+|------|------|
+| `0`（默认） | 不限。写端只在借不到空块时才回收最旧块 |
+| `N > 0` | 已发布块超过 N 时，写端在 `Publish` 里立刻把最旧的降级为 `FREE` |
+
+淘汰发生在 `Publish` 内部而不是借块时，这样「收端最多保留 N 条」是与写端
+节奏无关的确定性约束：连续发 5 条、`history=2`，收端只会读到第 4、5 条。
+
+细节：
+
+- 生效值被 clamp 到 `[1, block_num]`，写入 `SegmentHeader::history`，
+  打开者从段头读取，不需要重复声明配置
+- 淘汰时若最旧块 `readers != 0`（正被读者持有），本次跳过，下一次
+  `Publish` 会补上；这期间可能短暂超过 N 条
+- `history` 只影响「保留多少条」，不影响块总数。设 `history < block_num`
+  可以让写端始终有富余块可借，避免频繁走 victim 回收路径
+- 代价与 latest-wins 相同：被淘汰的消息直接 Reset，收端再也读不到
 
 ## 10. 验证结果
 
@@ -370,7 +399,14 @@ writer/reader 映射到同一地址。
 两端消息指针完全一致（`0x6000000009f0` / `0x600000000af0`），
 `shm::vector<uint8_t>`、`shm::vector<Point>`、`shm::string` 全部可直接读取。
 
-单进程三阶段测试（写满 → 读回 → 再写）与 ASan/UBSan 均通过。
+单进程四阶段测试（写满 → 读回 → 再写 → keep_last）与 ASan/UBSan 均通过：
+
+```
+stage1 extra Loan valid=1 (expect 1: recycle oldest)
+stage2 read 4 messages, content_ok=1
+stage3 loaned=4 (expect 4)
+stage4 kept=2 first_ts=4 (expect 2 / 4) -> PASS
+```
 
 ## 11. A210 待验证项
 

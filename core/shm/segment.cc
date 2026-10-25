@@ -199,6 +199,13 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
     hdr->payload_base = static_cast<uint32_t>(
         AlignUp(sizeof(SegmentHeader) + sizeof(BlockHeader) * cfg.block_num, 64));
 
+    // keep_last 生效值：0 表示不限；否则至少留 1 块，且不超过总块数
+    uint32_t hist = cfg.history;
+    if (hist > 0) {
+      if (hist > cfg.block_num) hist = cfg.block_num;
+    }
+    hdr->history = hist;
+
     for (uint32_t i = 0; i < cfg.block_num; ++i) {
       BlockHeader* b = HeaderAt(i);
       b->magic = kBlockMagic;
@@ -301,12 +308,7 @@ BlockHeader* Segment::TryAcquireWritable() {
                                           std::memory_order_relaxed)) {
       continue;
     }
-    b->generation += 1;
-    b->readers = 0;
-    b->used = 0;
-    b->msg_offset = 0;
-    Arena* a = BlockArena(b);
-    if (a != nullptr) a->Reset();
+    RecycleLocked(b, static_cast<uint32_t>(BlockState::WRITING));
     return b;
   }
 
@@ -334,38 +336,87 @@ BlockHeader* Segment::TryAcquireWritable() {
       victim->readers.load(std::memory_order_acquire) != 0) {
     return nullptr;   // 挑选期间被他人改动
   }
-  victim->state.store(static_cast<uint32_t>(BlockState::WRITING),
-                      std::memory_order_release);
-  victim->generation += 1;
-  victim->readers.store(0, std::memory_order_relaxed);
-  victim->used = 0;
-  victim->msg_offset = 0;
-  Arena* a = BlockArena(victim);
-  if (a != nullptr) a->Reset();
+  RecycleLocked(victim, static_cast<uint32_t>(BlockState::WRITING));
   return victim;
 }
 
 void Segment::Publish(BlockHeader* b, uint32_t msg_offset, uint64_t ts_ns) {
   if (b == nullptr || header_ == nullptr) return;
-  BlockGuard g(b);
-  b->msg_offset = msg_offset;
-  b->used = static_cast<uint32_t>(BlockArena(b) ? BlockArena(b)->Used() : 0);
-  b->readers.store(0, std::memory_order_relaxed);
-  b->seq.store(header_->next_seq.fetch_add(1, std::memory_order_acq_rel),
-               std::memory_order_relaxed);
-  b->timestamp_ns = ts_ns;
-  b->state.store(static_cast<uint32_t>(BlockState::PUBLISHED), std::memory_order_release);
+  {
+    BlockGuard g(b);
+    b->msg_offset = msg_offset;
+    b->used = static_cast<uint32_t>(BlockArena(b) ? BlockArena(b)->Used() : 0);
+    b->readers.store(0, std::memory_order_relaxed);
+    b->seq.store(header_->next_seq.fetch_add(1, std::memory_order_acq_rel),
+                 std::memory_order_relaxed);
+    b->timestamp_ns = ts_ns;
+    b->state.store(static_cast<uint32_t>(BlockState::PUBLISHED),
+                   std::memory_order_release);
+  }
+
+  // keep_last：发布后立即把超出 history 的最旧块降级为 FREE。
+  // 放在 Publish 里而不是借块时，是为了让「收端最多保留 history 条」
+  // 成为不依赖写端节奏的确定性约束。
+  if (header_->history > 0) EvictBeyondHistory();
 }
 
-void Segment::AbortWrite(BlockHeader* b) {
-  if (b == nullptr) return;
-  BlockGuard g(b);
+// 已发布块数量超过 history 时，把 seq 最小（且无读者）的块转为 FREE。
+// 不动 state 为 WRITING 的块，界面更直观：这些块直接变成可复用空块。
+void Segment::EvictBeyondHistory() {
+  const uint32_t limit = header_->history;
+  if (limit == 0) return;
+
+  const uint32_t n = header_->block_num;
+  while (true) {
+    // 统计已发布块数，并找出其中 seq 最小的
+    uint32_t published = 0;
+    BlockHeader* oldest = nullptr;
+    uint64_t oldest_seq = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+      BlockHeader* b = HeaderAt(i);
+      if (b->state.load(std::memory_order_acquire) !=
+          static_cast<uint32_t>(BlockState::PUBLISHED)) {
+        continue;
+      }
+      ++published;
+      const uint64_t s = b->seq.load(std::memory_order_acquire);
+      if (oldest == nullptr || s < oldest_seq) {
+        oldest = b;
+        oldest_seq = s;
+      }
+    }
+    if (published <= limit || oldest == nullptr) return;
+
+    BlockGuard g(oldest);
+    if (oldest->state.load(std::memory_order_acquire) !=
+            static_cast<uint32_t>(BlockState::PUBLISHED) ||
+        oldest->seq.load(std::memory_order_relaxed) != oldest_seq) {
+      continue;   // 被他人改动，重新统计
+    }
+    if (oldest->readers.load(std::memory_order_acquire) != 0) {
+      // 还有读者在用，就保留它；此时可能短暂超过 limit，
+      // 读者归还后不会自动触发淘汰，下一次 Publish 会补上。
+      return;
+    }
+    RecycleLocked(oldest, static_cast<uint32_t>(BlockState::FREE));
+    return;
+  }
+}
+
+void Segment::RecycleLocked(BlockHeader* b, uint32_t new_state) {
   Arena* a = BlockArena(b);
   if (a != nullptr) a->Reset();
   b->used = 0;
   b->msg_offset = 0;
   b->readers.store(0, std::memory_order_relaxed);
-  b->state.store(static_cast<uint32_t>(BlockState::FREE), std::memory_order_release);
+  b->generation += 1;
+  b->state.store(new_state, std::memory_order_release);
+}
+
+void Segment::AbortWrite(BlockHeader* b) {
+  if (b == nullptr) return;
+  BlockGuard g(b);
+  RecycleLocked(b, static_cast<uint32_t>(BlockState::FREE));
 }
 
 // ---------------------------------------------------------------------------
@@ -459,9 +510,10 @@ void Segment::Dump() const {
     std::fprintf(stderr, "[segment] not open\n");
     return;
   }
-  std::fprintf(stderr, "[segment] channel=%s base=0x%lx blocks=%u cap=%u chunk=%u\n",
+  std::fprintf(stderr, "[segment] channel=%s base=0x%lx blocks=%u cap=%u chunk=%u history=%u\n",
                channel_.c_str(), (unsigned long)reinterpret_cast<uintptr_t>(base_),
-               header_->block_num, header_->block_capacity, header_->chunk_size);
+               header_->block_num, header_->block_capacity, header_->chunk_size,
+               header_->history);
   for (uint32_t i = 0; i < header_->block_num; ++i) {
     const BlockHeader* b = HeaderAt(i);
     std::fprintf(stderr, "  block[%u] state=%u gen=%u readers=%u seq=%lu used=%u\n", i,

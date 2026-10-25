@@ -110,6 +110,8 @@ class Writer {
 
   uint32_t Capacity() const { return seg_ ? seg_->BlockCapacity() : 0; }
   uint32_t BlockNum() const { return seg_ ? seg_->BlockNum() : 0; }
+  // keep_last 生效值：收端最多保留的未消费消息条数（0 表示不限）
+  uint32_t History() const { return seg_ ? seg_->History() : 0; }
 
  private:
   std::shared_ptr<Segment> seg_;
@@ -161,6 +163,8 @@ class Reader {
 
   uint64_t since_seq() const { return since_seq_; }
   uint32_t BlockNum() const { return seg_ ? seg_->BlockNum() : 0; }
+  // keep_last 生效值：本 reader 最多能看到的未消费消息条数（0 表示不限）
+  uint32_t History() const { return seg_ ? seg_->History() : 0; }
 
  private:
   std::shared_ptr<Segment> seg_;
