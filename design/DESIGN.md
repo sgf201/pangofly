@@ -243,27 +243,35 @@ struct alignas(64) BlockHeader {
   uint64_t magic; uint32_t version; uint32_t index;
   std::atomic<uint32_t> lock;          // 跨进程自旋锁
   std::atomic<uint32_t> state;         // FREE / WRITING / PUBLISHED
-  uint32_t generation;                 // 每次复用 +1
-  uint32_t readers;                    // 活跃读者数
+  uint32_t generation;                 // 每次复用 +1（仅在 lock 内读写）
+  std::atomic<uint32_t> readers;       // 活跃读者数（写端无锁扫描）
   uint32_t capacity; uint32_t used;
   uint32_t arena_offset;               // arena 相对 payload 的偏移
   uint32_t msg_offset;                 // ★ T 对象相对 payload 的偏移
-  uint64_t seq; uint64_t timestamp_ns;
+  std::atomic<uint64_t> seq;           // 全局单调序号（写端无锁扫描）
+  uint64_t timestamp_ns;
 };
 static_assert(sizeof(BlockHeader) == 64);
 ```
 
 ```
-FREE --CAS--> WRITING --publish--> PUBLISHED --last reader--> FREE
+FREE --CAS--> WRITING --publish--> PUBLISHED --writer reclaim--> WRITING
   ^                |
   +---- abort -----+
 ```
 
 - 所有迁移都在块内 `lock` 下完成，避免「读者刚拿到、写者就复用」。
-- `generation` 用于读端判断「是否新消息」，同时防 ABA。
 - `seq` 由 `SegmentHeader::next_seq` 全局单调分发，读端以 `seq > since_seq` 过滤，天然去重且不丢消息。
 - 无空闲块时，写端可回收「最旧且 `readers == 0`」的已发布块（latest-wins），
   全部在写或被读才返回背压。
+
+**回收权只归写端。** `ReleaseRead` 仅递减 `readers`，绝不动 arena、绝不改 `state`。
+早期版本让最后一个读者直接把块 `Reset + FREE`，这会与写端的回收扫描形成
+「读者归还 → 立即 Reset → 写端同时复用」的三方踩踏；现在 `PUBLISHED` 块的
+唯一出口是写端在 `TryAcquireWritable` 里把它转成 `WRITING`。
+
+`readers` 与 `seq` 是 `std::atomic`：`TryAcquireWritable` 的 victim 扫描没有拿锁，
+必须无锁读这两个字段，用普通 `uint32_t` 在 C++ 内存模型下属于数据竞争。
 
 ### 7.1 消息对象的位置
 
@@ -296,13 +304,40 @@ BlockHeader* TryAcquireWritable();    // FREE -> WRITING，arena 已 Reset
 void Publish(b, msg_offset, ts);      // WRITING -> PUBLISHED，分配 seq
 void AbortWrite(b);                   // WRITING -> FREE
 BlockHeader* AcquireRead(&since_seq); // 取 seq 最小且 > since_seq 的
-void ReleaseRead(b);                  // readers--，归零则 Reset + FREE
+void ReleaseRead(b);                  // 仅 readers--
 BlockHeader* WaitRead(&since_seq, timeout_ns);
 
 void*      BlockPayload(b);
 Arena*     BlockArena(b);
 template <typename T> T* MessageOf(b);
 ```
+
+打开者以共享内存对象的实际大小（`fstat`）为准，不校验调用方传入的
+`block_num` / `block_capacity`：读端通常只知道 channel 名，要求它重复声明
+写端配置会让 attach 变得不必要地脆弱。创建者则把 `magic` 放在所有块头和
+arena 初始化完成之后最后写入，作为「初始化完成」标志——否则另一个进程可能
+在 `memset` 之后、arena 就绪之前就看到了合法 magic。
+
+### 8.3 Sample / View 跨线程
+
+`Sample<T>` 与 `View<T>` 都持有 `shared_ptr<Segment>`，因此它们可以脱离
+`Writer` / `Reader` 句柄独立存活。典型场景是「线程 A 只 `Loan`，线程 B 填充并
+`Publish`」：
+
+```cpp
+// 线程 A
+auto s = writer->Loan();
+queue.Push(std::move(s));        // move-only，只转移指针
+
+// 线程 B
+auto s = queue.Pop();
+s->pixels.resize(bytes);         // 在共享内存里原地写
+writer->Publish(std::move(s));
+```
+
+跨线程传递的成本是一个指针：消息对象始终留在共享内存中，不复制任何数据。
+代价是块在 `WRITING` 状态停留更久、更容易触发背压，因此单线程场景应优先用
+`writer->Write(fn)`。
 
 ## 9. 接口层
 

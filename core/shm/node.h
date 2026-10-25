@@ -44,6 +44,10 @@ inline uint64_t NowNs() {
 
 template <typename T>
 class Writer {
+  static_assert(IsShmCompatibleV<T>,
+                "Writer<T>: T must be declared shm-compatible; put "
+                "PANGOFLY_SHM_MESSAGE(T) after its definition");
+
  public:
   explicit Writer(std::shared_ptr<Segment> seg) : seg_(std::move(seg)) {}
 
@@ -74,7 +78,7 @@ class Writer {
     const uint32_t msg_offset =
         static_cast<uint32_t>(static_cast<uint8_t*>(slot) - payload);
 
-    return Sample<T>(seg_.get(), b, msg, arena, msg_offset);
+    return Sample<T>(seg_, b, msg, arena, msg_offset);
   }
 
   // 发布。消息体不析构：块回收时直接 arena->Reset()。
@@ -113,6 +117,10 @@ class Writer {
 
 template <typename T>
 class Reader {
+  static_assert(IsShmCompatibleV<T>,
+                "Reader<T>: T must be declared shm-compatible; put "
+                "PANGOFLY_SHM_MESSAGE(T) after its definition");
+
  public:
   explicit Reader(std::shared_ptr<Segment> seg) : seg_(std::move(seg)) {}
 
@@ -126,7 +134,7 @@ class Reader {
       seg_->ReleaseRead(b);
       return {};
     }
-    return View<T>(seg_.get(), b, msg);
+    return View<T>(seg_, b, msg);
   }
 
   // 阻塞等待，超时返回无效 View
@@ -139,7 +147,7 @@ class Reader {
       seg_->ReleaseRead(b);
       return {};
     }
-    return View<T>(seg_.get(), b, msg);
+    return View<T>(seg_, b, msg);
   }
 
   // 回调式：View 在回调期间有效

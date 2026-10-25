@@ -10,6 +10,10 @@
 // View<T>：  读端视图。构造时 readers++，析构时 readers--。
 //            通过 operator-> 直接访问共享内存中的对象，不做任何拷贝。
 //
+// 两者都持有 shared_ptr<Segment>，因此可以安全地跨线程、跨函数传递：
+// 即使创建它的 Writer / Reader 句柄已被销毁，块的所有权链依然完整。
+// 典型用法是「一个线程 Loan，另一个线程填充并 Publish」。
+//
 // 生命周期契约
 //   * T 的析构函数不会被调用。释放一块内存 = arena->Reset()，O(1)
 //   * 因此 T 内只允许使用 shm::vector / shm::string 这类由 arena 管理的容器，
@@ -17,6 +21,7 @@
 // ============================================================================
 
 #include <cstdint>
+#include <memory>
 #include <utility>
 
 #include "core/shm/arena.h"
@@ -34,8 +39,13 @@ class Sample {
  public:
   Sample() = default;
 
-  Sample(Segment* seg, BlockHeader* block, T* msg, Arena* arena, uint32_t msg_offset)
-      : seg_(seg), block_(block), msg_(msg), arena_(arena), msg_offset_(msg_offset) {}
+  Sample(std::shared_ptr<Segment> seg, BlockHeader* block, T* msg, Arena* arena,
+         uint32_t msg_offset)
+      : seg_(std::move(seg)),
+        block_(block),
+        msg_(msg),
+        arena_(arena),
+        msg_offset_(msg_offset) {}
 
   Sample(Sample&& other) noexcept { MoveFrom(other); }
 
@@ -64,7 +74,7 @@ class Sample {
   bool valid() const noexcept { return msg_ != nullptr && block_ != nullptr; }
 
   BlockHeader* block() const noexcept { return block_; }
-  Segment* segment() const noexcept { return seg_; }
+  Segment* segment() const noexcept { return seg_.get(); }
   uint32_t msg_offset() const noexcept { return msg_offset_; }
 
   // 由 Writer::Publish 调用：标记已完成，析构时不再 Abort
@@ -72,18 +82,19 @@ class Sample {
 
  private:
   void MoveFrom(Sample& o) noexcept {
-    seg_ = o.seg_;
+    seg_ = std::move(o.seg_);
     block_ = o.block_;
     msg_ = o.msg_;
     arena_ = o.arena_;
     msg_offset_ = o.msg_offset_;
-    published_ = o.published_;
-    o.Reset();
-    o.published_ = true;   // 阻止源对象析构时 Abort
+    o.block_ = nullptr;
+    o.msg_ = nullptr;
+    o.arena_ = nullptr;
+    o.msg_offset_ = 0;
   }
 
   void Reset() noexcept {
-    seg_ = nullptr;
+    seg_.reset();
     block_ = nullptr;
     msg_ = nullptr;
     arena_ = nullptr;
@@ -91,18 +102,17 @@ class Sample {
   }
 
   void Cleanup() noexcept {
-    if (!published_ && seg_ != nullptr && block_ != nullptr) {
+    if (seg_ && block_ != nullptr) {
       seg_->AbortWrite(block_);
     }
     Reset();
   }
 
-  Segment* seg_ = nullptr;
+  std::shared_ptr<Segment> seg_;
   BlockHeader* block_ = nullptr;
   T* msg_ = nullptr;
   Arena* arena_ = nullptr;
   uint32_t msg_offset_ = 0;
-  bool published_ = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -113,8 +123,8 @@ class View {
  public:
   View() = default;
 
-  View(Segment* seg, BlockHeader* block, const T* msg)
-      : seg_(seg), block_(block), msg_(msg) {}
+  View(std::shared_ptr<Segment> seg, BlockHeader* block, const T* msg)
+      : seg_(std::move(seg)), block_(block), msg_(msg) {}
 
   View(View&& other) noexcept { MoveFrom(other); }
 
@@ -136,29 +146,30 @@ class View {
   const T* get() const noexcept { return msg_; }
 
   bool valid() const noexcept { return msg_ != nullptr; }
-  uint64_t seq() const noexcept { return block_ ? block_->seq : 0; }
+  uint64_t seq() const noexcept {
+    return block_ ? block_->seq.load(std::memory_order_acquire) : 0;
+  }
   uint64_t timestamp_ns() const noexcept { return block_ ? block_->timestamp_ns : 0; }
 
  private:
   void MoveFrom(View& o) noexcept {
-    seg_ = o.seg_;
+    seg_ = std::move(o.seg_);
     block_ = o.block_;
     msg_ = o.msg_;
-    o.seg_ = nullptr;
     o.block_ = nullptr;
     o.msg_ = nullptr;
   }
 
   void Cleanup() noexcept {
-    if (seg_ != nullptr && block_ != nullptr) {
+    if (seg_ && block_ != nullptr) {
       seg_->ReleaseRead(block_);
     }
-    seg_ = nullptr;
     block_ = nullptr;
     msg_ = nullptr;
+    seg_.reset();
   }
 
-  Segment* seg_ = nullptr;
+  std::shared_ptr<Segment> seg_;
   BlockHeader* block_ = nullptr;
   const T* msg_ = nullptr;
 };

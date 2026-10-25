@@ -1,0 +1,1 @@
+/usr/bin/c++ -fsanitize=thread -g -O1 -Wall -Wextra -fPIC -g -fsanitize=thread -Wl,--dependency-file=CMakeFiles/idc.dir/link.d CMakeFiles/idc.dir/idl/tools/idc.cc.o CMakeFiles/idc.dir/idl/lexer/lexer.cc.o CMakeFiles/idc.dir/idl/parser/parser.cc.o CMakeFiles/idc.dir/idl/codegen/code_generator.cc.o -o idc

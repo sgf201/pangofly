@@ -1,0 +1,1 @@
+/usr/bin/c++ -fsanitize=thread -g -O1 -Wall -Wextra -fPIC -g -fsanitize=thread -Wl,--dependency-file=CMakeFiles/shm_reader.dir/link.d CMakeFiles/shm_reader.dir/reader.cc.o -o shm_reader  -Wl,-rpath,/home/sgf/A210_pangofly/pangofly/build_tSan ../../../libpangofly.so -lpthread -lrt

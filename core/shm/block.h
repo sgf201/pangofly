@@ -45,15 +45,15 @@ struct alignas(64) BlockHeader {
   std::atomic<uint32_t> lock;         // 0 = 未加锁，1 = 已加锁（跨进程自旋锁）
   std::atomic<uint32_t> state;        // BlockState
 
-  uint32_t generation;                // 每次复用 +1，读端据此判断「是否新消息」
-  uint32_t readers;                   // 当前活跃读者数
+  uint32_t generation;                // 每次复用 +1（仅在 BlockGuard 内读写）
+  std::atomic<uint32_t> readers;      // 写端回收扫描会无锁读，必须原子
 
   uint32_t capacity;                  // 该块 arena 可用字节
   uint32_t used;                      // arena 实际使用字节
   uint32_t arena_offset;              // arena 元数据相对块 payload 的偏移（当前为 0）
   uint32_t msg_offset;                // T 对象相对块 payload 的偏移
 
-  uint64_t seq;                       // 全局单调序号
+  std::atomic<uint64_t> seq;          // 写端回收扫描会无锁读，必须原子
   uint64_t timestamp_ns;
 
   void Lock() noexcept {

@@ -110,7 +110,6 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
   channel_ = channel;
 
   const std::string name = ShmName(channel);
-  const size_t total = CalcTotalSize(cfg);
 
   int fd = shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
   bool creator = (fd >= 0);
@@ -127,11 +126,32 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
     }
   }
 
-  if (creator && ftruncate(fd, static_cast<off_t>(total)) < 0) {
-    PANGOFLY_ERROR << "[segment] ftruncate failed" << std::endl;
-    close(fd);
-    shm_unlink(name.c_str());
-    return false;
+  // 打开者以共享内存对象的实际大小为准，而不是调用方传入的 cfg。
+  // 否则「读端不知道写端的 block_num / block_capacity」就永远无法 attach，
+  // 这是比配置校验更重要的可用性要求。
+  size_t total = 0;
+  if (creator) {
+    total = CalcTotalSize(cfg);
+    if (ftruncate(fd, static_cast<off_t>(total)) < 0) {
+      PANGOFLY_ERROR << "[segment] ftruncate failed" << std::endl;
+      close(fd);
+      shm_unlink(name.c_str());
+      return false;
+    }
+  } else {
+    // 创建者可能刚 shm_open 完还没 ftruncate，此时 size 为 0，稍等重试
+    struct stat st{};
+    for (int spin = 0; spin < 2000; ++spin) {
+      if (fstat(fd, &st) == 0 && st.st_size > 0) break;
+      struct timespec req{0, 1000000};   // 1ms
+      nanosleep(&req, nullptr);
+    }
+    if (st.st_size <= 0) {
+      PANGOFLY_ERROR << "[segment] fstat failed for " << name << std::endl;
+      close(fd);
+      return false;
+    }
+    total = static_cast<size_t>(st.st_size);
   }
 
   Window w = Region::Acquire(channel, total);
@@ -139,6 +159,14 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
     PANGOFLY_ERROR << "[segment] no window for " << channel << " need=" << total
                    << std::endl;
     close(fd);
+    if (creator) shm_unlink(name.c_str());
+    return false;
+  }
+  if (w.size < total) {
+    PANGOFLY_ERROR << "[segment] window too small: size=" << w.size
+                   << " need=" << total << std::endl;
+    close(fd);
+    Region::Release(w);
     if (creator) shm_unlink(name.c_str());
     return false;
   }
@@ -161,7 +189,6 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
 
   if (creator) {
     std::memset(mem, 0, total);
-    hdr->magic = kSegmentMagic;
     hdr->version = kSegmentVersion;
     hdr->block_num = cfg.block_num;
     hdr->block_capacity = cfg.block_capacity;
@@ -180,12 +207,12 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
       b->lock.store(0, std::memory_order_release);
       b->state.store(static_cast<uint32_t>(BlockState::FREE), std::memory_order_release);
       b->generation = 0;
-      b->readers = 0;
+      b->readers.store(0, std::memory_order_relaxed);
       b->capacity = cfg.block_capacity;
       b->used = 0;
       b->arena_offset = 0;
       b->msg_offset = 0;
-      b->seq = 0;
+      b->seq.store(0, std::memory_order_relaxed);
       b->timestamp_ns = 0;
 
       uint8_t* chunk = reinterpret_cast<uint8_t*>(mem) + hdr->payload_base +
@@ -200,7 +227,16 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
         return false;
       }
     }
+    // magic 最后写：作为「初始化完成」标志。若在 memset 后立刻写 magic，
+    // 另一个进程可能在块头/arena 尚未就绪时就看到了合法 magic 而 attach 上来。
+    std::atomic_thread_fence(std::memory_order_release);
+    hdr->magic = kSegmentMagic;
   } else {
+    // 等待创建者完成初始化（最多 2 秒），避免同时启动时读到半初始化的头
+    for (int spin = 0; spin < 2000 && hdr->magic != kSegmentMagic; ++spin) {
+      struct timespec req{0, 1000000};   // 1ms
+      nanosleep(&req, nullptr);
+    }
     if (hdr->magic != kSegmentMagic || hdr->version != kSegmentVersion) {
       PANGOFLY_ERROR << "[segment] header magic/version mismatch" << std::endl;
       munmap(mem, total);
@@ -209,10 +245,11 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
       window_ = Window{};
       return false;
     }
-    if (hdr->block_num != cfg.block_num || hdr->block_capacity != cfg.block_capacity) {
-      PANGOFLY_ERROR << "[segment] config mismatch: existing blocks=" << hdr->block_num
-                     << " cap=" << hdr->block_capacity << ", requested blocks="
-                     << cfg.block_num << " cap=" << cfg.block_capacity << std::endl;
+    // 打开者不校验 cfg：它的 block_num / block_capacity 以段头记录为准。
+    // 调用方通常只关心 channel 名，要求它重复声明写端配置不现实。
+    if (hdr->total_size != total) {
+      PANGOFLY_ERROR << "[segment] size mismatch: header=" << hdr->total_size
+                     << " actual=" << total << std::endl;
       munmap(mem, total);
       base_ = nullptr;
       Region::Release(w);
@@ -282,10 +319,11 @@ BlockHeader* Segment::TryAcquireWritable() {
         static_cast<uint32_t>(BlockState::PUBLISHED)) {
       continue;
     }
-    if (b->readers != 0) continue;
-    if (victim == nullptr || b->seq < victim_seq) {
+    if (b->readers.load(std::memory_order_acquire) != 0) continue;
+    const uint64_t s = b->seq.load(std::memory_order_acquire);
+    if (victim == nullptr || s < victim_seq) {
       victim = b;
-      victim_seq = b->seq;
+      victim_seq = s;
     }
   }
   if (victim == nullptr) return nullptr;   // 全部在写或被读：背压
@@ -293,13 +331,13 @@ BlockHeader* Segment::TryAcquireWritable() {
   BlockGuard g(victim);
   if (victim->state.load(std::memory_order_acquire) !=
           static_cast<uint32_t>(BlockState::PUBLISHED) ||
-      victim->readers != 0) {
+      victim->readers.load(std::memory_order_acquire) != 0) {
     return nullptr;   // 挑选期间被他人改动
   }
   victim->state.store(static_cast<uint32_t>(BlockState::WRITING),
                       std::memory_order_release);
   victim->generation += 1;
-  victim->readers = 0;
+  victim->readers.store(0, std::memory_order_relaxed);
   victim->used = 0;
   victim->msg_offset = 0;
   Arena* a = BlockArena(victim);
@@ -312,7 +350,9 @@ void Segment::Publish(BlockHeader* b, uint32_t msg_offset, uint64_t ts_ns) {
   BlockGuard g(b);
   b->msg_offset = msg_offset;
   b->used = static_cast<uint32_t>(BlockArena(b) ? BlockArena(b)->Used() : 0);
-  b->seq = header_->next_seq.fetch_add(1, std::memory_order_acq_rel);
+  b->readers.store(0, std::memory_order_relaxed);
+  b->seq.store(header_->next_seq.fetch_add(1, std::memory_order_acq_rel),
+               std::memory_order_relaxed);
   b->timestamp_ns = ts_ns;
   b->state.store(static_cast<uint32_t>(BlockState::PUBLISHED), std::memory_order_release);
 }
@@ -324,6 +364,7 @@ void Segment::AbortWrite(BlockHeader* b) {
   if (a != nullptr) a->Reset();
   b->used = 0;
   b->msg_offset = 0;
+  b->readers.store(0, std::memory_order_relaxed);
   b->state.store(static_cast<uint32_t>(BlockState::FREE), std::memory_order_release);
 }
 
@@ -345,39 +386,38 @@ BlockHeader* Segment::AcquireRead(uint64_t* since_seq) {
         static_cast<uint32_t>(BlockState::PUBLISHED)) {
       continue;
     }
-    if (b->seq <= floor) continue;
-    if (best == nullptr || b->seq < best_seq) {
+    const uint64_t s = b->seq.load(std::memory_order_acquire);
+    if (s <= floor) continue;
+    if (best == nullptr || s < best_seq) {
       best = b;
-      best_seq = b->seq;
+      best_seq = s;
     }
   }
   if (best == nullptr) return nullptr;
 
   {
     BlockGuard g(best);
+    // 双重校验：挑选期间可能被写端回收并重发
     if (best->state.load(std::memory_order_acquire) !=
-        static_cast<uint32_t>(BlockState::PUBLISHED) ||
-        best->seq != best_seq) {
-      return nullptr;   // 挑选期间被写端回收
+            static_cast<uint32_t>(BlockState::PUBLISHED) ||
+        best->seq.load(std::memory_order_relaxed) != best_seq) {
+      return nullptr;
     }
-    best->readers += 1;
+    best->readers.fetch_add(1, std::memory_order_acq_rel);
   }
 
   if (since_seq != nullptr) *since_seq = best_seq;
   return best;
 }
 
+// 读者只减少引用计数，绝不回收块。
+// 块的回收权完全归写端：只有写端在 TryAcquireWritable 里把 PUBLISHED
+// 转为 WRITING 时才 Reset arena。否则「读者归还 → 立即 Reset → 写端
+// 正在复用」会互相踩踏。
 void Segment::ReleaseRead(BlockHeader* b) {
   if (b == nullptr) return;
   BlockGuard g(b);
-  if (b->readers > 0) b->readers -= 1;
-  if (b->readers == 0 &&
-      b->state.load(std::memory_order_relaxed) ==
-          static_cast<uint32_t>(BlockState::PUBLISHED)) {
-    Arena* a = BlockArena(b);
-    if (a != nullptr) a->Reset();
-    b->state.store(static_cast<uint32_t>(BlockState::FREE), std::memory_order_release);
-  }
+  b->readers.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 BlockHeader* Segment::WaitRead(uint64_t* since_seq, uint64_t timeout_ns) {
@@ -425,8 +465,9 @@ void Segment::Dump() const {
   for (uint32_t i = 0; i < header_->block_num; ++i) {
     const BlockHeader* b = HeaderAt(i);
     std::fprintf(stderr, "  block[%u] state=%u gen=%u readers=%u seq=%lu used=%u\n", i,
-                 b->state.load(std::memory_order_relaxed), b->generation, b->readers,
-                 (unsigned long)b->seq, b->used);
+                 b->state.load(std::memory_order_relaxed), b->generation,
+                 b->readers.load(std::memory_order_relaxed),
+                 (unsigned long)b->seq.load(std::memory_order_relaxed), b->used);
   }
 }
 

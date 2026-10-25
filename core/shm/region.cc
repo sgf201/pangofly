@@ -209,11 +209,18 @@ Window Region::Acquire(const std::string& channel, size_t need_bytes) {
     return {};
   }
 
-  // 已存在同名 channel：复用并增加引用
+  // 已存在同名 channel：复用并增加引用。
+  // 要求跨度一致：若发起方需要更大的窗口，说明不是同一个段，直接失败而不是
+  // 返回一个装不下的窗口。
   for (uint32_t i = 0; i < max_slots; ++i) {
     ChannelSlot& s = reg->slots[i];
     if (s.state.load(std::memory_order_acquire) != SLOT_ACTIVE) continue;
     if (std::strncmp(s.name, channel.c_str(), kNameMax - 1) != 0) continue;
+    if (s.span != span) {
+      PANGOFLY_ERROR << "[region] channel " << channel << " already mapped with span="
+                     << s.span << " but request needs span=" << span << std::endl;
+      return {};
+    }
     s.refcount.fetch_add(1, std::memory_order_acq_rel);
     Window w;
     w.index = s.window_index;

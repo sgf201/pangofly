@@ -108,8 +108,12 @@ class Arena {
   // 写入块大小并同步 footer / 后继块的 prev
   void WriteRaw(uint32_t off, uint32_t raw) noexcept;
 
-  static uint32_t Normalize(size_t bytes, bool aligned) noexcept {
-    size_t need = kBlockOverhead + (aligned ? kArenaAlign : 0) + bytes + kBlockFooter;
+  static uint32_t Normalize(size_t bytes, size_t align) noexcept {
+    // payload 起点固定在 off + kBlockOverhead，本身只保证 kArenaAlign。
+    // 若调用方要求更大的对齐，最坏情况要额外跳过 align - kArenaAlign 字节，
+    // 这里必须预留这么多，否则对齐后的 payload 会越出块尾。
+    size_t extra = (align > kArenaAlign) ? (align - kArenaAlign) : 0;
+    size_t need = kBlockOverhead + extra + bytes + kBlockFooter;
     if (need < kBlockMin) need = kBlockMin;
     need = (need + kArenaAlign - 1) & ~(kArenaAlign - 1);
     return static_cast<uint32_t>(need);
@@ -308,9 +312,10 @@ inline Arena* Arena::Attach(void* mem) noexcept {
 
 inline void* Arena::Allocate(size_t bytes, size_t align) noexcept {
   if (bytes == 0) return nullptr;
+  if (align < kArenaAlign) align = kArenaAlign;
 
   bool aligned = align > kArenaAlign;
-  uint32_t need = Normalize(bytes, aligned);
+  uint32_t need = Normalize(bytes, align);
   if (need > capacity_) return nullptr;
 
   size_t fl = 0, sl = 0;
@@ -337,9 +342,9 @@ inline void* Arena::Allocate(size_t bytes, size_t align) noexcept {
   if (aligned) {
     uintptr_t p = reinterpret_cast<uintptr_t>(payload);
     uintptr_t a = (p + align - 1) & ~(uintptr_t)(align - 1);
+    // 预留空间已在 Normalize 中算入，这里只需确认不越过块尾
     if (a + bytes > reinterpret_cast<uintptr_t>(base()) + off + need - kBlockFooter) {
-      // 保险：装不下则退回不保证超对齐
-      a = p;
+      a = p;   // 理论上不会发生；退化为 16 字节对齐
     }
     payload = reinterpret_cast<uint8_t*>(a);
   }
