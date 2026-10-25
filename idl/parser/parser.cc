@@ -214,9 +214,24 @@ std::shared_ptr<Type> Parser::parse_type() {
         return std::make_shared<Type>(TypeKind::STRING);
     }
     
-    // 用户定义类型
+    // 用户定义类型 / 定宽整数别名（int8/uint32/float64 等）
     if (match(TokenType::IDENTIFIER)) {
-        return std::make_shared<Type>(TypeKind::USER_DEF, previous().text);
+        const std::string name = previous().text;
+        static const struct {
+            const char* alias;
+            TypeKind kind;
+        } kFixedWidth[] = {
+            {"int8", TypeKind::PRIMITIVE_INT8},       {"uint8", TypeKind::PRIMITIVE_UINT8},
+            {"int16", TypeKind::PRIMITIVE_INT16},     {"uint16", TypeKind::PRIMITIVE_UINT16},
+            {"int32", TypeKind::PRIMITIVE_INT32},     {"uint32", TypeKind::PRIMITIVE_UINT32},
+            {"int64", TypeKind::PRIMITIVE_INT64},     {"uint64", TypeKind::PRIMITIVE_UINT64},
+            {"float32", TypeKind::PRIMITIVE_FLOAT32}, {"float64", TypeKind::PRIMITIVE_FLOAT64},
+            {"bool", TypeKind::PRIMITIVE_BOOL},
+        };
+        for (const auto& fw : kFixedWidth) {
+            if (name == fw.alias) return std::make_shared<Type>(fw.kind);
+        }
+        return std::make_shared<Type>(TypeKind::USER_DEF, name);
     }
     
     report_error("Expected type");

@@ -24,6 +24,10 @@ private:
     std::string generate_field(const Field& f);
     std::string generate_getter(const Field& f);
     std::string generate_type_name(const Type& t);
+
+    // 递归生成 DynamicSize() 的累加语句
+    void GenerateDynamicExtent(std::ostringstream& oss, const Field& f,
+                               const std::string& indent);
     
     std::shared_ptr<IDLDocument> document_;
 };

@@ -1,104 +1,101 @@
-#include <iostream>
-#include <string>
-#include <thread>
-#include <chrono>
+// v2 单进程自测：
+//   1) 写满所有块再逐条读，校验内容与容器语义
+//   2) 读完后块被归还，继续写触发「回收最旧块」路径
+
+#include <cstdio>
 #include <cstring>
-#include <unistd.h>
-#include <sys/wait.h>
+#include <utility>
 
 #include "core/pangofly.h"
+#include "examples/common/shm_example/messages.h"
 
-struct TestMessage {
-  int id;
-  double value;
-  char name[64];
-  
-  TestMessage() : id(0), value(0.0) {
-    memset(name, 0, sizeof(name));
-  }
-  
-  explicit TestMessage(pangofly::BlockAllocator* /*allocator*/) : id(0), value(0.0) {
-    memset(name, 0, sizeof(name));
-  }
-  
-  size_t CalculateSize() const {
-    return sizeof(TestMessage);
-  }
-};
-
-void WriterProcess() {
-  std::cout << "Writer process started, PID=" << getpid() << std::endl;
-  std::this_thread::sleep_for(std::chrono::seconds(1));
-  
-  auto node = pangofly::CreateNode("writer_node");
-  auto writer = node->CreateWriter<TestMessage>("test_channel");
-  
-  TestMessage msg;
-  msg.id = 1;
-  msg.value = 3.14;
-  strcpy(msg.name, "Hello Pangofly");
-  
-  for (int i = 0; i < 10; ++i) {
-    msg.id = i;
-    bool success = writer->Write(msg);
-    std::cout << "Writer: Sent message id=" << msg.id << ", value=" << msg.value << ", name=" << msg.name << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-  }
-  
-  std::cout << "Writer done!" << std::endl;
+static void Fill(example::ImageFrame* m, int i) {
+  m->timestamp_ns = static_cast<int64_t>(i);
+  m->width = 4;
+  m->height = 2;
+  m->stride = 12;
+  m->pixels.resize(24);
+  for (int k = 0; k < 24; ++k) m->pixels[k] = static_cast<uint8_t>(k + i);
+  m->detections.resize(1);
+  m->detections[0].x = i;
+  m->detections[0].score = 0.5f;
+  m->label.assign("t");
 }
 
-void ReaderProcess() {
-  std::cout << "Reader process started, PID=" << getpid() << std::endl;
-  auto node = pangofly::CreateNode("reader_node");
-  auto reader = node->CreateReader<TestMessage>("test_channel");
-  
-  TestMessage msg;
-  pangofly::MessageInfo info;
-  
-  for (int i = 0; i < 10; ++i) {
-    bool success = reader->Read(&msg, &info);
-    if (success) {
-      std::cout << "Reader: Received message id=" << msg.id << ", value=" << msg.value 
-                << ", name=" << msg.name << ", seq=" << info.seq << std::endl;
-    } else {
-      std::cout << "Reader: No message available" << std::endl;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+static bool Check(const example::ImageFrame& m) {
+  if (m.pixels.size() != 24 || m.detections.size() != 1) return false;
+  if (m.detections[0].x != static_cast<int32_t>(m.timestamp_ns)) return false;
+  if (std::strcmp(m.label.c_str(), "t") != 0) return false;
+  for (int k = 0; k < 24; ++k) {
+    if (m.pixels[k] != static_cast<uint8_t>(k + m.timestamp_ns)) return false;
   }
-  
-  std::cout << "Reader done!" << std::endl;
+  return true;
 }
 
 int main() {
-  std::cout << "Starting Pangofly SHM test (multi-process)..." << std::endl;
-  
-  pid_t writer_pid = fork();
-  if (writer_pid == 0) {
-    // Writer process
-    WriterProcess();
-    return 0;
-  } else if (writer_pid < 0) {
-    std::cerr << "Failed to fork writer process" << std::endl;
+  if (!pangofly::Init()) {
+    std::fprintf(stderr, "Init failed\n");
     return 1;
   }
-  
-  pid_t reader_pid = fork();
-  if (reader_pid == 0) {
-    // Reader process
-    ReaderProcess();
-    return 0;
-  } else if (reader_pid < 0) {
-    std::cerr << "Failed to fork reader process" << std::endl;
-    kill(writer_pid, SIGKILL);
+
+  auto node = pangofly::CreateNode("self_test");
+  auto writer = node->CreateWriter<example::ImageFrame>("self_channel");
+  auto reader = node->CreateReader<example::ImageFrame>("self_channel");
+  if (!writer || !reader) {
+    std::fprintf(stderr, "create failed\n");
     return 1;
   }
-  
-  // Parent process waits
-  int status;
-  waitpid(writer_pid, &status, 0);
-  waitpid(reader_pid, &status, 0);
-  
-  std::cout << "Test completed!" << std::endl;
-  return 0;
+
+  const uint32_t n = writer->BlockNum();
+  std::printf("block_num=%u cap=%u\n", n, writer->Capacity());
+
+  // 阶段 1：写满所有块
+  for (uint32_t i = 1; i <= n; ++i) {
+    auto s = writer->Loan();
+    if (!s.valid()) {
+      std::fprintf(stderr, "stage1 Loan failed at %u\n", i);
+      return 1;
+    }
+    Fill(s.get(), static_cast<int>(i));
+    if (!writer->Publish(std::move(s))) return 1;
+  }
+
+  // 块已用尽：此时再借应当走「回收无读者旧块」或返回背压
+  {
+    auto s = writer->Loan();
+    std::printf("stage1 extra Loan valid=%d (expect 1: recycle oldest)\n", s.valid() ? 1 : 0);
+    if (!s.valid()) {
+      std::fprintf(stderr, "expected recycle path\n");
+      return 1;
+    }
+    Fill(s.get(), 999);
+    if (!writer->Publish(std::move(s))) return 1;
+  }
+
+  // 阶段 2：把剩下的都读出来
+  int got = 0;
+  bool all_ok = true;
+  while (true) {
+    auto v = reader->Acquire();
+    if (!v.valid()) break;
+    ++got;
+    if (!Check(*v)) {
+      std::printf("  MISMATCH ts=%lld\n", static_cast<long long>(v->timestamp_ns));
+      all_ok = false;
+    }
+  }
+  std::printf("stage2 read %d messages, content_ok=%d\n", got, all_ok ? 1 : 0);
+  if (!all_ok || got == 0) return 1;
+
+  // 阶段 3：读完后块已归还，应能再次借满
+  int loaned = 0;
+  for (uint32_t i = 0; i < n; ++i) {
+    auto s = writer->Loan();
+    if (!s.valid()) break;
+    Fill(s.get(), static_cast<int>(i));
+    if (!writer->Publish(std::move(s))) return 1;
+    ++loaned;
+  }
+  std::printf("stage3 loaned=%d (expect %u)\n", loaned, n);
+  return loaned == static_cast<int>(n) ? 0 : 1;
 }
