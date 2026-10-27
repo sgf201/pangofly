@@ -34,6 +34,33 @@ cmake --build build -j
 跨进程运行时，写端与读端打印的消息指针完全相同（例如 `0x6000000009f0`），
 这是「同地址映射」生效的直接证据——容器内的指针因此在两端都有效。
 
+### 读端：不要保存裸指针
+
+`Sample` / `View` 都不提供 `get()`，只有 `operator->` / `operator*`：
+
+```cpp
+auto v = reader->Wait(100);
+if (v.valid()) {
+    use(v->pixels);          // 对
+    use(*v);                 // 对
+    // const ImageFrame* p = v.get();   // 不存在这个接口
+}
+```
+
+如果要把消息带出作用域，**拷贝 `View`**，不要存指针：
+
+```cpp
+std::vector<pangofly::shm::View<example::ImageFrame>> held;
+{
+    auto v = reader->Wait(100);
+    held.push_back(v);       // 拷贝：readers+1，块被保护到最后一个副本析构
+}                            // v 析构，但块仍被 held[0] 持有
+use(held[0]->pixels);        // 安全
+```
+
+拷贝是零堆分配的（复用块头的 `readers`），代价是长期持有时会阻止该块被
+淘汰，写端可能因此拿不到块。需要打印地址时用 `v.Address()`，它返回整数。
+
 ### 跨线程：Loan 与填充分离
 
 `shm_thread_pipeline.cc` 演示 `Sample<T>` 的所有权可以跨线程转移：

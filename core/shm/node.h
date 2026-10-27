@@ -88,14 +88,15 @@ class Writer {
     BlockHeader* b = s.block();
     const uint32_t msg_offset = s.msg_offset();
     seg_->Publish(b, msg_offset, detail::NowNs());
-    s.MarkPublished();
+    s.ResetForPublish();
     return true;
   }
 
   void Abort(Sample<T>&& s) {
     if (s.valid()) {
-      seg_->AbortWrite(s.block());
-      s.MarkPublished();
+      BlockHeader* b = s.block();
+      seg_->AbortWrite(b);
+      s.ResetForPublish();
     }
   }
 
@@ -152,16 +153,17 @@ class Reader {
     return View<T>(seg_, b, msg);
   }
 
-  // 回调式：View 在回调期间有效
+  // 回调式：把 View 本身交给回调，所有权仍归 Reader。
+  // 回调内可以拷贝 View 来延长使用期（拷贝会增加 readers）。
   template <typename Fn>
   bool Observe(Fn&& fn) {
     View<T> v = Acquire();
     if (!v.valid()) return false;
-    fn(*v);
+    fn(v);
     return true;
   }
 
-  uint64_t since_seq() const { return since_seq_; }
+  uint64_t SinceSeq() const { return since_seq_; }
   uint32_t BlockNum() const { return seg_ ? seg_->BlockNum() : 0; }
   // keep_last 生效值：本 reader 最多能看到的未消费消息条数（0 表示不限）
   uint32_t History() const { return seg_ ? seg_->History() : 0; }

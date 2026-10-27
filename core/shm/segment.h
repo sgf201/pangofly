@@ -34,6 +34,14 @@ namespace pangofly {
 namespace shm {
 
 class Arena;
+template <typename T>
+class Sample;
+template <typename T>
+class View;
+template <typename T>
+class Writer;
+template <typename T>
+class Reader;
 
 constexpr uint64_t kSegmentMagic   = 0x50465345474D4E32ULL;  // "PFSEGMN2"
 constexpr uint32_t kSegmentVersion = 2;
@@ -76,6 +84,29 @@ class Segment {
   // 同一固定地址，否则失败。
   bool OpenOrCreate(const std::string& channel, const SegmentConfig& cfg);
 
+  bool valid() const noexcept { return header_ != nullptr; }
+  uint32_t BlockNum() const noexcept { return header_ ? header_->block_num : 0; }
+  uint32_t BlockCapacity() const noexcept { return header_ ? header_->block_capacity : 0; }
+  // keep_last 生效值：收端最多保留的未消费消息块数（0 表示不限）
+  uint32_t History() const noexcept { return header_ ? header_->history : 0; }
+  uintptr_t BaseAddress() const noexcept { return reinterpret_cast<uintptr_t>(base_); }
+  const std::string& channel() const noexcept { return channel_; }
+
+  void Dump() const;
+
+ private:
+  // 块级接口仅供 Writer / Reader / Sample / View 使用。对外只暴露
+  // Sample / View，这样上层拿不到 BlockHeader*，也就无法把它存成
+  // 跨作用域失效的裸指针。
+  template <typename T>
+  friend class Writer;
+  template <typename T>
+  friend class Reader;
+  template <typename T>
+  friend class Sample;
+  template <typename T>
+  friend class View;
+
   // ---------------------------------------------------------------- 写端
   // 取一个可写块（FREE -> WRITING），arena 已 Reset。无可用块返回 nullptr。
   BlockHeader* TryAcquireWritable();
@@ -117,17 +148,6 @@ class Segment {
         static_cast<const uint8_t*>(BlockPayload(b)) + b->msg_offset);
   }
 
-  bool valid() const noexcept { return header_ != nullptr; }
-  uint32_t BlockNum() const noexcept { return header_ ? header_->block_num : 0; }
-  uint32_t BlockCapacity() const noexcept { return header_ ? header_->block_capacity : 0; }
-  // keep_last 生效值：收端最多保留的未消费消息块数（0 表示不限）
-  uint32_t History() const noexcept { return header_ ? header_->history : 0; }
-  uintptr_t BaseAddress() const noexcept { return reinterpret_cast<uintptr_t>(base_); }
-  const std::string& channel() const noexcept { return channel_; }
-
-  void Dump() const;
-
- private:
   BlockHeader* HeaderAt(uint32_t i);
   const BlockHeader* HeaderAt(uint32_t i) const;
   static size_t CalcArenaBytes(const SegmentConfig& cfg);

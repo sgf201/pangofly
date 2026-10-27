@@ -43,10 +43,11 @@ int main(int argc, char** argv) {
     ++got;
     // v 指向共享内存，直接读，没有任何拷贝
     std::printf("[reader] seq=%llu %dx%d stride=%d %zu bytes tag=%s dets=%zu"
-                " ptr=%p\n",
-                static_cast<unsigned long long>(v.seq()), v->width, v->height,
+                " ptr=0x%lx\n",
+                static_cast<unsigned long long>(v.Seq()), v->width, v->height,
                 v->stride, v->pixels.size(), v->label.c_str(),
-                v->detections.size(), static_cast<const void*>(v.get()));
+                v->detections.size(),
+                static_cast<unsigned long>(v.Address()));
     if (!v->detections.empty()) {
       std::printf("         det0=(%d,%d,%d,%d) score=%.2f\n", v->detections[0].x,
                   v->detections[0].y, v->detections[0].w, v->detections[0].h,

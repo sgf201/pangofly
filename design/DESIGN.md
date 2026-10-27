@@ -351,12 +351,44 @@ use(v->points);                   // RAII 视图，析构自动归还
 ```
 
 `Sample<T>` 是写端借据：未 `Publish` 就析构会自动 `Abort`，不会泄漏块。
-`View<T>` 是读端视图：构造 `readers++`，析构 `readers--`。
+`View<T>` 是读端视图：构造/拷贝 `readers++`，析构 `readers--`。
 
 `Node` 按 channel 在进程内复用同一个 `Segment`，保证同一进程里多个
 writer/reader 映射到同一地址。
 
-### 9.1 keep_last(history)
+### 9.1 对外不暴露裸指针
+
+上层只能拿到 `Sample<T>` / `View<T>` 两个 RAII 句柄，拿不到 `BlockHeader*`：
+
+| 原先暴露 | 现在 | 原因 |
+|---|---|---|
+| `Sample::get()` | 删除，用 `*s` / `s->` | 裸指针可被存到作用域外 |
+| `View::get()` | 删除，用 `*v` / `v->` | 同上 |
+| `Sample::block()` | 改私有，`friend Writer<T>` | 块句柄是内部实现 |
+| `Sample::segment()` | 删除 | 上层不该操作 Segment |
+| `Sample::arena()` | 删除 | 直接用 `s->field` 即可 |
+| `Segment::TryAcquireWritable()` 等 | 改私有，`friend Writer/Reader` | 块级接口仅供消息层 |
+| `reader->Observe(fn)` 传 `T&` | 改传 `const View<T>&` | 引用在回调结束后悬空 |
+
+需要打印地址时用 `Address()`，返回 `uintptr_t` 而非指针——无法被解引用，
+也就不会被误存成悬空指针。
+
+`View<T>` 因此改为**可拷贝**：拷贝即共享同一块，`readers` 再加一，
+保护期延长到最后一个副本析构，且不产生任何堆分配（复用块头里的计数器）。
+
+```cpp
+auto v = reader->Wait(100);
+if (v.valid()) {
+    std::vector<pangofly::shm::View<Msg>> held;
+    held.push_back(v);          // 合法：拷贝延长保护期
+    use(held[0]->points);       // v 析构后依然安全
+}
+```
+
+代价：副本被长期持有时该块无法被淘汰或回收，写端可能因此背压。这与
+`shared_ptr` 的行为一致，属于使用者需要理解的契约。
+
+### 9.2 keep_last(history)
 
 `SegmentConfig::history` 控制收端最多能保留多少条未消费消息：
 
@@ -408,13 +440,54 @@ stage3 loaned=4 (expect 4)
 stage4 kept=2 first_ts=4 (expect 2 / 4) -> PASS
 ```
 
-## 11. A210 待验证项
+## 11. 已知限制
+
+### 11.1 没有通知机制，Wait 是轮询
+
+`Segment::WaitRead` 目前是固定 100us 间隔的轮询，`Publish` 不会唤醒任何人：
+
+```cpp
+BlockHeader* Segment::WaitRead(uint64_t* since_seq, uint64_t timeout_ns) {
+  const uint64_t deadline = NowNs() + timeout_ns;
+  while (true) {
+    BlockHeader* b = AcquireRead(since_seq);
+    if (b != nullptr) return b;
+    if (NowNs() >= deadline) return nullptr;
+    struct timespec req{0, 100000};   // 100us
+    nanosleep(&req, nullptr);
+  }
+}
+```
+
+影响：
+
+- 消息发布后，收端平均多等约 50us 才拿得到（最坏 100us）
+- 单进程内也无法避免——同进程内 writer / reader 之间同样没有共享的唤醒源
+- 因为用的是 `nanosleep` 睡眠而不是忙等，CPU 占用不高
+
+对 30fps 视觉链路（单帧预算 33ms）可以忽略；对高频控制环，这会表现为每帧固定的排队延迟。
+
+### 11.2 后续可选方案
+
+| 方案 | 延迟 | 复杂度 | 崩溃安全 |
+|------|------|--------|----------|
+| 自适应退避轮询（100us → 1ms → 5ms） | ~50us 起 | 极低 | 天然安全 |
+| 段头放 futex word，`Publish` 里 `FUTEX_WAKE` | ~1us | 中 | 安全 |
+| shm 内 `pthread_cond_t`（`PTHREAD_PROCESS_SHARED`） | ~1us | 中高 | 需 robust mutex，进程崩溃会 hang |
+
+倾向 futex：`SegmentHeader` 已保证同地址映射，futex word 可直接跨进程共用；
+`FUTEX_WAIT` 自带值比较，天然规避 lost wakeup。实现要点是 `WaitRead` 先读一次
+`next_seq` 作为期望值，再 `FUTEX_WAIT(word, 观测值, timeout)`；`Publish` 在
+`fetch_add` 之后 `FUTEX_WAKE`。注意必须用跨进程版本（不能加 `_PRIVATE`）。
+
+## 12. A210 待验证项
 
 - RISC-V 64 位上 `0x600000000000` 起始的 VA 窗口是否可用（需确认内核 VA 布局）
 - GCC 8.3 + uclibc 下 `std::vector` 的 allocator 传播行为
 - 与 TORQ 运行时共存时的内存映射冲突
+- 无通知机制下的实际唤醒延迟，是否满足上层帧率
 
-## 12. 迁移历史
+## 13. 迁移历史
 
 v2 一次性替换掉了旧链路上的全部组件，未保留兼容层：
 

@@ -9,17 +9,17 @@
 #include "core/pangofly.h"
 #include "examples/common/shm_example/messages.h"
 
-static void Fill(example::ImageFrame* m, int i) {
-  m->timestamp_ns = static_cast<int64_t>(i);
-  m->width = 4;
-  m->height = 2;
-  m->stride = 12;
-  m->pixels.resize(24);
-  for (int k = 0; k < 24; ++k) m->pixels[k] = static_cast<uint8_t>(k + i);
-  m->detections.resize(1);
-  m->detections[0].x = i;
-  m->detections[0].score = 0.5f;
-  m->label.assign("t");
+static void Fill(example::ImageFrame& m, int i) {
+  m.timestamp_ns = static_cast<int64_t>(i);
+  m.width = 4;
+  m.height = 2;
+  m.stride = 12;
+  m.pixels.resize(24);
+  for (int k = 0; k < 24; ++k) m.pixels[k] = static_cast<uint8_t>(k + i);
+  m.detections.resize(1);
+  m.detections[0].x = i;
+  m.detections[0].score = 0.5f;
+  m.label.assign("t");
 }
 
 static bool Check(const example::ImageFrame& m) {
@@ -56,7 +56,7 @@ int main() {
       std::fprintf(stderr, "stage1 Loan failed at %u\n", i);
       return 1;
     }
-    Fill(s.get(), static_cast<int>(i));
+    Fill(*s, static_cast<int>(i));
     if (!writer->Publish(std::move(s))) return 1;
   }
 
@@ -68,7 +68,7 @@ int main() {
       std::fprintf(stderr, "expected recycle path\n");
       return 1;
     }
-    Fill(s.get(), 999);
+    Fill(*s, 999);
     if (!writer->Publish(std::move(s))) return 1;
   }
 
@@ -92,7 +92,7 @@ int main() {
   for (uint32_t i = 0; i < n; ++i) {
     auto s = writer->Loan();
     if (!s.valid()) break;
-    Fill(s.get(), static_cast<int>(i));
+    Fill(*s, static_cast<int>(i));
     if (!writer->Publish(std::move(s))) return 1;
     ++loaned;
   }
@@ -119,7 +119,7 @@ int main() {
         std::fprintf(stderr, "stage4 Loan failed at %d\n", i);
         return 1;
       }
-      Fill(s.get(), i);
+      Fill(*s, i);
       if (!hw->Publish(std::move(s))) return 1;
     }
 
