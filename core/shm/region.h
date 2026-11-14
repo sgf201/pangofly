@@ -31,6 +31,9 @@ struct RegionConfig {
   size_t window_size = 64ULL << 20;     // 64 MiB / channel
   uint32_t max_channels = 128;
   bool require_fixed = true;            // 固定地址是硬前提
+  // 注册表自身的固定映射地址，必须落在 base..base+total_size 之外。
+  // 32 位平台无法使用 48 位地址，由应用层显式给出。
+  uintptr_t registry_base = 0x580000000000ULL;
 };
 
 struct Window {

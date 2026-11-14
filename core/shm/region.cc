@@ -20,8 +20,6 @@ constexpr uint64_t kRegistryMagic = 0x5046524547494F4EULL;  // "PFREGION"
 constexpr uint32_t kRegistryVersion = 2;
 constexpr size_t kNameMax = 64;
 constexpr const char* kRegistryName = "/pangofly_v2_registry";
-// 注册表自身的固定映射地址，远离数据窗口区（默认 0x600000000000 起）
-constexpr uintptr_t kRegistryAddr = 0x580000000000ULL;
 
 enum SlotState : uint32_t {
   SLOT_FREE = 0,
@@ -112,6 +110,24 @@ bool Region::Init(const RegionConfig& cfg) {
     return false;
   }
 
+  // 32 位平台上，48 位默认值会在编译期被截断成 0，这里必须先拦下来，
+  // 否则会以地址 0 去 mmap，报出误导性的 MAP_FIXED 失败。
+  if (cfg.base == 0 || cfg.registry_base == 0) {
+    PANGOFLY_ERROR << "[region] base/registry_base must be non-zero; "
+                   << "32-bit targets need an explicit RegionConfig" << std::endl;
+    return false;
+  }
+
+  // 注册表与数据窗口区不得重叠
+  {
+    const uintptr_t lo = cfg.registry_base;
+    const uintptr_t hi = lo + RegistryBytes(cfg);
+    if (lo < cfg.base + cfg.total_size && hi > cfg.base) {
+      PANGOFLY_ERROR << "[region] registry range overlaps window region" << std::endl;
+      return false;
+    }
+  }
+
   const size_t bytes = RegistryBytes(cfg);
 
   int fd = shm_open(kRegistryName, O_RDWR | O_CREAT | O_EXCL, 0600);
@@ -137,7 +153,7 @@ bool Region::Init(const RegionConfig& cfg) {
 
   // 注册表放在预留窗口区之外的一个独立固定地址，
   // 避免与任何数据窗口争用同一段 VA。
-  const uintptr_t reg_addr = kRegistryAddr;
+  const uintptr_t reg_addr = cfg.registry_base;
 
   void* reg_mem = MapFixedCreate(fd, bytes, reg_addr);
   if (reg_mem == nullptr) {
