@@ -230,11 +230,16 @@ int WakeSend(const char* channel) {
 // 调用方（脚本）负责检查所有输出地址互不相同。
 // ---------------------------------------------------------------------------
 int Slot(const char* tag) {
-  // 用足够大的 need_bytes 强制跨多个窗口，放大交错窗口
-  const size_t need = 2ULL * 64 * 1024 * 1024;
+  // 默认申请 2 个窗口（64MB × 2），强制走「跨窗口多步分配」这条最易出错的路径。
+  // 32 位配置窗口数与总窗口数都更小，可用环境变量 P0_SLOT_MB 调小。
+  size_t need = 2ULL * 64 * 1024 * 1024;
+  if (const char* mb = std::getenv("P0_SLOT_MB")) {
+    const long v = std::atol(mb);
+    if (v > 0) need = static_cast<size_t>(v) * 1024 * 1024;
+  }
   ::pangofly::shm::Window w = ::pangofly::shm::Region::Acquire(tag, need);
   if (!w.valid()) {
-    std::printf("SLOT_FAIL tag=%s\n", tag);
+    std::printf("SLOT_FAIL tag=%s need=%zu\n", tag, need);
     return 8;
   }
   std::printf("SLOT_OK tag=%s addr=0x%lx index=%u size=%zu\n", tag,

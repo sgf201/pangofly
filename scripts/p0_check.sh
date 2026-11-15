@@ -138,24 +138,28 @@ echo
 echo "############ 6. 跨进程窗口分配不得重叠（flock 互斥） ############"
 # 多个进程同时申请窗口。无互斥时槽位分配的多步写会交错，
 # 可能让两个不同 channel 拿到同一段 VA。
-for i in 1 2 3 4 5 6; do
+# 32 位配置只有 8 个窗口槽，用 P0_SLOT_COUNT / P0_SLOT_MB 调小规模。
+SLOT_N=${P0_SLOT_COUNT:-6}
+for i in $(seq 1 $SLOT_N); do
   "$BIN" slot "slot_tag_$i" > "$TMP/slot_$i.log" 2>&1 &
 done
 wait
 SLOT_OK=0
 ADDRS=""
-for i in 1 2 3 4 5 6; do
+i=1
+while [ $i -le $SLOT_N ]; do
   cat "$TMP/slot_$i.log"
   if grep -q "SLOT_OK" "$TMP/slot_$i.log"; then
     SLOT_OK=$((SLOT_OK + 1))
     A=$(sed -n 's/.*addr=\(0x[0-9a-f]*\).*/\1/p' "$TMP/slot_$i.log" | head -1)
     ADDRS="$ADDRS $A"
   fi
+  i=$((i + 1))
 done
-[ "$SLOT_OK" -ge 6 ] || fail "并发申请窗口失败：仅 $SLOT_OK/6 成功"
+[ "$SLOT_OK" -ge "$SLOT_N" ] || fail "并发申请窗口失败：仅 $SLOT_OK/$SLOT_N 成功"
 UNIQ=$(echo "$ADDRS" | tr ' ' '\n' | grep -v '^$' | sort -u | wc -l)
-[ "$UNIQ" -eq 6 ] || fail "出现地址重叠：6 个 channel 只有 $UNIQ 个不同地址"
-echo "  -> 6 个进程并发申请到 6 个互不重叠的窗口"
+[ "$UNIQ" -eq "$SLOT_N" ] || fail "出现地址重叠：$SLOT_N 个 channel 只有 $UNIQ 个不同地址"
+echo "  -> $SLOT_N 个进程并发申请到 $SLOT_N 个互不重叠的窗口"
 # 清理本轮占用的注册表槽位：删掉注册表，下次 Init 会重建
 rm -f /dev/shm/pangofly_v2_registry 2>/dev/null || true
 

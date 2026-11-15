@@ -5,7 +5,14 @@ set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 
 # Toolchain path
-set(TOOLCHAIN_PATH /home/sgf/ws/luckfox_pangofly/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf)
+# 允许用 -DTOOLCHAIN_PATH 覆盖；默认按「本仓库在 sdk/pangofly」的相对位置推导，
+# 这样换机器 / 换用户名都不需要改文件。
+if(NOT TOOLCHAIN_PATH)
+  get_filename_component(_pf_root ${CMAKE_CURRENT_LIST_DIR} ABSOLUTE)
+  get_filename_component(_sdk_root ${_pf_root} DIRECTORY)
+  set(TOOLCHAIN_PATH
+      ${_sdk_root}/tools/linux/toolchain/arm-rockchip830-linux-uclibcgnueabihf)
+endif()
 set(CROSS_PREFIX ${TOOLCHAIN_PATH}/bin/arm-rockchip830-linux-uclibcgnueabihf-)
 
 set(CMAKE_C_COMPILER ${CROSS_PREFIX}gcc)
