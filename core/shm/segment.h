@@ -20,6 +20,9 @@
 //   * 每个块内的 arena 是唯一的分配入口，消息对象 T 由该 arena 分配，
 //     其相对 payload 的偏移记在 BlockHeader::msg_offset
 //   * 消息按 seq 单调递增；读端只认 seq > 上次读到的 seq，天然去重
+//   * 段头记录消息类型指纹：attach 时与调用方声明的 T 比对，不一致直接失败。
+//     channel 名相同但消息类型不同，是共享内存模式下最容易犯、后果最重的
+//     错误（按错误布局解释内存 → 读垃圾或越界），必须在 attach 时拦住。
 // ============================================================================
 
 #include <atomic>
@@ -43,8 +46,22 @@ class Writer;
 template <typename T>
 class Reader;
 
-constexpr uint64_t kSegmentMagic   = 0x50465345474D4E32ULL;  // "PFSEGMN2"
-constexpr uint32_t kSegmentVersion = 2;
+constexpr uint64_t kSegmentMagic   = 0x50465345474D4E33ULL;  // "PFSEGMN3"
+constexpr uint32_t kSegmentVersion = 3;
+
+// 类型名指纹：32 位 FNV-1a。
+// 只用于「两端是否声明了同一个消息类型」的一致性判断，不承担安全职责；
+// 名字本身也存进段头，冲突时能把两边的类型名都打出来。
+inline uint32_t TypeHash(const char* s) noexcept {
+  uint32_t h = 2166136261u;
+  if (s != nullptr) {
+    for (const char* p = s; *p != '\0'; ++p) {
+      h ^= static_cast<uint8_t>(*p);
+      h *= 16777619u;
+    }
+  }
+  return h;
+}
 
 struct SegmentConfig {
   uint32_t block_num = 4;
@@ -69,8 +86,17 @@ struct alignas(64) SegmentHeader {
   std::atomic<uint64_t> next_seq;
   uint32_t payload_base;      // 第一个 chunk 相对段首的偏移
   uint32_t history;           // keep_last 生效值（0 = 不限）
-  uint32_t reserved;
+
+  // 消息类型身份。创建者写入，attach 者必须匹配，否则拒绝接入。
+  // 指纹取类型名的 32 位 FNV-1a，名字本身一并存下用于报错。
+  // 名字超长时截断，只影响报错输出，不影响指纹判断。
+  uint32_t type_hash;
+  uint32_t type_name_len;
+  char type_name[64];
 };
+
+static_assert(sizeof(SegmentHeader) == 128 && sizeof(SegmentHeader) % 64 == 0,
+              "SegmentHeader must occupy whole cache lines");
 
 class Segment {
  public:
@@ -81,14 +107,19 @@ class Segment {
   Segment& operator=(const Segment&) = delete;
 
   // 优先以创建者身份建立；已存在则以打开者身份接入。两条路径都要求映射到
-  // 同一固定地址，否则失败。
-  bool OpenOrCreate(const std::string& channel, const SegmentConfig& cfg);
+  // 同一固定地址，且消息类型与段头记录一致，否则失败。
+  // type_name 由上层用 GetTypeName() 提供，用于生成并校验类型指纹。
+  bool OpenOrCreate(const std::string& channel, const SegmentConfig& cfg,
+                    const char* type_name);
 
   bool valid() const noexcept { return header_ != nullptr; }
   uint32_t BlockNum() const noexcept { return header_ ? header_->block_num : 0; }
   uint32_t BlockCapacity() const noexcept { return header_ ? header_->block_capacity : 0; }
   // keep_last 生效值：收端最多保留的未消费消息块数（0 表示不限）
   uint32_t History() const noexcept { return header_ ? header_->history : 0; }
+  // 该段承载的消息类型名（创建者声明，已在 attach 时校验过一致性）
+  const char* TypeName() const noexcept { return header_ ? header_->type_name : ""; }
+  uint32_t TypeHashValue() const noexcept { return header_ ? header_->type_hash : 0; }
   uintptr_t BaseAddress() const noexcept { return reinterpret_cast<uintptr_t>(base_); }
   const std::string& channel() const noexcept { return channel_; }
 
@@ -156,8 +187,12 @@ class Segment {
   // keep_last：已发布块超过 history 时丢弃最旧的（不含刚发布的块）
   void EvictBeyondHistory();
 
+  // 写端崩溃留下的 WRITING 僵尸块回收。
+  // 返回值：true 表示本次回收了至少一个块（调用方可重试取块）。
+  bool ReclaimZombieWriting();
+
   // 把块标记为可复用并回收其 arena。调用方必须已持有该块的 BlockGuard，
-  // 且已确认 state == PUBLISHED、readers == 0。
+  // 且已确认为可回收状态（PUBLISHED 且无读者、或 WRITING 且持有者已死）。
   void RecycleLocked(BlockHeader* b, uint32_t new_state);
 
   void* base_ = nullptr;

@@ -101,13 +101,19 @@ const BlockHeader* Segment::HeaderAt(uint32_t i) const {
   return reinterpret_cast<const BlockHeader*>(p) + i;
 }
 
-bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg) {
+bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg,
+                          const char* type_name) {
   if (header_ != nullptr) return true;
   if (cfg.block_num == 0 || cfg.block_capacity < 4096) {
     PANGOFLY_ERROR << "[segment] invalid config" << std::endl;
     return false;
   }
+  if (type_name == nullptr || type_name[0] == '\0') {
+    PANGOFLY_ERROR << "[segment] missing message type name for " << channel << std::endl;
+    return false;
+  }
   channel_ = channel;
+  const uint32_t my_hash = TypeHash(type_name);
 
   const std::string name = ShmName(channel);
 
@@ -206,6 +212,14 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
     }
     hdr->history = hist;
 
+    // 消息类型身份：写端与读端必须声明同一个类型，否则拒绝 attach
+    hdr->type_hash = my_hash;
+    const size_t name_len = std::strlen(type_name);
+    hdr->type_name_len = static_cast<uint32_t>(
+        name_len < sizeof(hdr->type_name) ? name_len : sizeof(hdr->type_name) - 1);
+    std::memset(hdr->type_name, 0, sizeof(hdr->type_name));
+    std::memcpy(hdr->type_name, type_name, hdr->type_name_len);
+
     for (uint32_t i = 0; i < cfg.block_num; ++i) {
       BlockHeader* b = HeaderAt(i);
       b->magic = kBlockMagic;
@@ -215,10 +229,9 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
       b->state.store(static_cast<uint32_t>(BlockState::FREE), std::memory_order_release);
       b->generation = 0;
       b->readers.store(0, std::memory_order_relaxed);
-      b->capacity = cfg.block_capacity;
-      b->used = 0;
-      b->arena_offset = 0;
       b->msg_offset = 0;
+      b->owner_pid = 0;
+      b->owner_start = 0;
       b->seq.store(0, std::memory_order_relaxed);
       b->timestamp_ns = 0;
 
@@ -245,7 +258,14 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
       nanosleep(&req, nullptr);
     }
     if (hdr->magic != kSegmentMagic || hdr->version != kSegmentVersion) {
-      PANGOFLY_ERROR << "[segment] header magic/version mismatch" << std::endl;
+      // 旧版本留下的段无法按新布局解释，必须清掉重建。给出可执行的提示，
+      // 否则用户只会看到一句 magic 不匹配而不知如何处理。
+      PANGOFLY_ERROR << "[segment] header magic/version mismatch for " << name
+                     << " (found magic=0x" << std::hex << hdr->magic << " version="
+                     << std::dec << hdr->version << ", expect 0x" << std::hex
+                     << kSegmentMagic << std::dec << "/" << kSegmentVersion
+                     << "). A stale segment from an older build is likely; remove it with:"
+                     << " rm -f /dev/shm/" << name << std::endl;
       munmap(mem, total);
       base_ = nullptr;
       Region::Release(w);
@@ -268,6 +288,22 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg)
       PANGOFLY_ERROR << "[segment] ADDRESS MISMATCH: creator=0x" << std::hex
                      << hdr->self_base << " self=0x" << reinterpret_cast<uintptr_t>(mem)
                      << std::dec << std::endl;
+      munmap(mem, total);
+      base_ = nullptr;
+      Region::Release(w);
+      window_ = Window{};
+      return false;
+    }
+    // 类型一致性：按错误的 T 解释共享内存比崩溃更危险（读到垃圾、越过 arena
+    // 边界），必须在这里拦住。把两端的类型名都打出来便于定位。
+    if (hdr->type_hash != my_hash) {
+      const uint32_t seg_len = hdr->type_name_len < sizeof(hdr->type_name)
+                                   ? hdr->type_name_len
+                                   : static_cast<uint32_t>(sizeof(hdr->type_name));
+      PANGOFLY_ERROR << "[segment] TYPE MISMATCH on channel=" << channel
+                     << ": segment has '" << std::string(hdr->type_name, seg_len)
+                     << "' but this process attached as '" << type_name << "'"
+                     << std::endl;
       munmap(mem, total);
       base_ = nullptr;
       Region::Release(w);
@@ -312,7 +348,24 @@ BlockHeader* Segment::TryAcquireWritable() {
     return b;
   }
 
-  // 2) 无空闲块时回收「最旧且无读者」的已发布块（latest-wins，不阻塞写端）
+  // 2) 回收写端崩溃留下的 WRITING 僵尸块，成功后重新走一遍取块流程
+  if (ReclaimZombieWriting()) {
+    for (uint32_t i = 0; i < n; ++i) {
+      BlockHeader* b = HeaderAt(i);
+      BlockGuard g(b);
+      uint32_t expect = static_cast<uint32_t>(BlockState::FREE);
+      if (!b->state.compare_exchange_strong(expect,
+                                            static_cast<uint32_t>(BlockState::WRITING),
+                                            std::memory_order_acq_rel,
+                                            std::memory_order_relaxed)) {
+        continue;
+      }
+      RecycleLocked(b, static_cast<uint32_t>(BlockState::WRITING));
+      return b;
+    }
+  }
+
+  // 3) 无空闲块时回收「最旧且无读者」的已发布块（latest-wins，不阻塞写端）
   BlockHeader* victim = nullptr;
   uint64_t victim_seq = 0;
   for (uint32_t i = 0; i < n; ++i) {
@@ -340,16 +393,55 @@ BlockHeader* Segment::TryAcquireWritable() {
   return victim;
 }
 
+// 写端在 WRITING 状态崩溃（kill -9、段错误、掉电重启后的残留）时，块既
+// 不会被 Publish 也不会被 AbortWrite，state 永远停在 WRITING。这类块不
+// 回收就会被永久排除在可用块之外——块数少的通道几次崩溃后彻底写不进去。
+//
+// 安全性依赖 BlockHeader::owner_pid / owner_start：只有确认持有者进程已经
+// 退出（不同存活进程、也不是同 pid 的新进程）才强行回收；持有者还活着时
+// 一律不动，避免把正在写的块重置掉。
+bool Segment::ReclaimZombieWriting() {
+  if (header_ == nullptr) return false;
+
+  bool reclaimed = false;
+  for (uint32_t i = 0; i < header_->block_num; ++i) {
+    BlockHeader* b = HeaderAt(i);
+    if (b->state.load(std::memory_order_acquire) !=
+        static_cast<uint32_t>(BlockState::WRITING)) {
+      continue;
+    }
+    // 先不带锁做一个便宜的存活判断，避免对健康块频繁加锁
+    if (b->OwnerAlive()) continue;
+
+    BlockGuard g(b);
+    // 双重校验：加锁期间持有者可能刚好 Publish 或 Abort
+    if (b->state.load(std::memory_order_acquire) !=
+        static_cast<uint32_t>(BlockState::WRITING)) {
+      continue;
+    }
+    if (b->OwnerAlive()) continue;
+
+    PANGOFLY_WARN << "[segment] reclaim zombie block " << b->index << " of channel "
+                  << channel_ << " (owner pid=" << b->owner_pid << " start="
+                  << b->owner_start << " exited while WRITING)" << std::endl;
+    RecycleLocked(b, static_cast<uint32_t>(BlockState::FREE));
+    reclaimed = true;
+  }
+  return reclaimed;
+}
+
 void Segment::Publish(BlockHeader* b, uint32_t msg_offset, uint64_t ts_ns) {
   if (b == nullptr || header_ == nullptr) return;
   {
     BlockGuard g(b);
     b->msg_offset = msg_offset;
-    b->used = static_cast<uint32_t>(BlockArena(b) ? BlockArena(b)->Used() : 0);
     b->readers.store(0, std::memory_order_relaxed);
     b->seq.store(header_->next_seq.fetch_add(1, std::memory_order_acq_rel),
                  std::memory_order_relaxed);
     b->timestamp_ns = ts_ns;
+    // 所有权归还给段：PUBLISHED 块的回收只看 readers 与 seq，与写端进程无关
+    b->owner_pid = 0;
+    b->owner_start = 0;
     b->state.store(static_cast<uint32_t>(BlockState::PUBLISHED),
                    std::memory_order_release);
   }
@@ -406,10 +498,18 @@ void Segment::EvictBeyondHistory() {
 void Segment::RecycleLocked(BlockHeader* b, uint32_t new_state) {
   Arena* a = BlockArena(b);
   if (a != nullptr) a->Reset();
-  b->used = 0;
   b->msg_offset = 0;
   b->readers.store(0, std::memory_order_relaxed);
   b->generation += 1;
+  if (new_state == static_cast<uint32_t>(BlockState::WRITING)) {
+    // 记录 WRITING 的持有者，崩溃后由后续进程据此回收
+    const ProcessToken self = SelfToken();
+    b->owner_pid = self.pid;
+    b->owner_start = self.start;
+  } else {
+    b->owner_pid = 0;
+    b->owner_start = 0;
+  }
   b->state.store(new_state, std::memory_order_release);
 }
 
@@ -496,9 +596,10 @@ const void* Segment::BlockPayload(const BlockHeader* b) const {
 }
 
 Arena* Segment::BlockArena(BlockHeader* b) {
+  // arena 元数据紧贴 payload 起始（创建时即如此），无额外偏移
   void* payload = BlockPayload(b);
   if (payload == nullptr) return nullptr;
-  return Arena::Attach(static_cast<uint8_t*>(payload) + b->arena_offset);
+  return Arena::Attach(payload);
 }
 
 const Arena* Segment::BlockArena(const BlockHeader* b) const {
@@ -510,16 +611,19 @@ void Segment::Dump() const {
     std::fprintf(stderr, "[segment] not open\n");
     return;
   }
-  std::fprintf(stderr, "[segment] channel=%s base=0x%lx blocks=%u cap=%u chunk=%u history=%u\n",
-               channel_.c_str(), (unsigned long)reinterpret_cast<uintptr_t>(base_),
-               header_->block_num, header_->block_capacity, header_->chunk_size,
-               header_->history);
+  std::fprintf(stderr,
+               "[segment] channel=%s type=%s base=0x%lx blocks=%u cap=%u chunk=%u history=%u\n",
+               channel_.c_str(), header_->type_name,
+               (unsigned long)reinterpret_cast<uintptr_t>(base_), header_->block_num,
+               header_->block_capacity, header_->chunk_size, header_->history);
   for (uint32_t i = 0; i < header_->block_num; ++i) {
     const BlockHeader* b = HeaderAt(i);
-    std::fprintf(stderr, "  block[%u] state=%u gen=%u readers=%u seq=%lu used=%u\n", i,
+    std::fprintf(stderr,
+                 "  block[%u] state=%u gen=%u readers=%u seq=%lu owner=%u/%u\n", i,
                  b->state.load(std::memory_order_relaxed), b->generation,
                  b->readers.load(std::memory_order_relaxed),
-                 (unsigned long)b->seq.load(std::memory_order_relaxed), b->used);
+                 (unsigned long)b->seq.load(std::memory_order_relaxed), b->owner_pid,
+                 b->owner_start);
   }
 }
 

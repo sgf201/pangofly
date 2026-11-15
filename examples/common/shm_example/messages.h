@@ -16,6 +16,8 @@
 namespace example {
 
 struct Detection {
+  static const char* GetTypeName() { return "example::Detection"; }
+
   int32_t x;
   int32_t y;
   int32_t w;
@@ -28,6 +30,8 @@ struct Detection {
 };
 
 struct ImageFrame {
+  static const char* GetTypeName() { return "example::ImageFrame"; }
+
   int64_t timestamp_ns;
   int32_t width;
   int32_t height;

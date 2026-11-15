@@ -44,8 +44,19 @@ IDL (idc)  ──►  类型层  shm::vector / shm::string / shm::Allocator
 
 ### 4.1 注册表
 
-注册表放在独立的小 shm（`/pangofly_v2_registry`），固定映射在 `0x580000000000`，
-与数据窗口区（默认 `0x600000000000` 起）互不干扰。
+注册表放在独立的小 shm（`/pangofly_v2_registry`），固定映射在 `RegionConfig::registry_base`，
+与数据窗口区互不干扰。
+
+`RegionConfig` 的默认值按指针宽度分两套——48 位地址在 32 位平台会被截断成 0，
+若沿用 64 位的默认值，`pangofly::Init()` 在 armv7l 上必然失败（旧版本需要应用层
+自己写一份 `RegionConfig` 才能启动）：
+
+| 平台 | base | total_size | window_size | max_channels | registry_base |
+|------|------|-----------|-------------|--------------|---------------|
+| 64 位 | `0x600000000000` | 8 GiB | 64 MiB | 128 | `0x580000000000` |
+| 32 位 | `0x40000000` | 512 MiB | 64 MiB | 8 | `0x70000000` |
+
+32 位窗口区结束于 `0x60000000`，注册表在窗口区之外，不会冲突。
 
 ```cpp
 struct ChannelSlot {
@@ -241,13 +252,13 @@ template <>           struct IsShmCompatible<string>;      // true
 ```cpp
 struct alignas(64) BlockHeader {
   uint64_t magic; uint32_t version; uint32_t index;
-  std::atomic<uint32_t> lock;          // 跨进程自旋锁
+  std::atomic<uint64_t> lock;          // 0 或持有者 token（pid<<32 | start）
   std::atomic<uint32_t> state;         // FREE / WRITING / PUBLISHED
-  uint32_t generation;                 // 每次复用 +1（仅在 lock 内读写）
   std::atomic<uint32_t> readers;       // 活跃读者数（写端无锁扫描）
-  uint32_t capacity; uint32_t used;
-  uint32_t arena_offset;               // arena 相对 payload 的偏移
+  uint32_t generation;                 // 每次复用 +1（仅在 lock 内读写）
   uint32_t msg_offset;                 // ★ T 对象相对 payload 的偏移
+  uint32_t owner_pid;                  // ★ WRITING 持有者（崩溃回收用）
+  uint32_t owner_start;                // ★ 持有者的进程启动时刻
   std::atomic<uint64_t> seq;           // 全局单调序号（写端无锁扫描）
   uint64_t timestamp_ns;
 };
@@ -273,7 +284,42 @@ FREE --CAS--> WRITING --publish--> PUBLISHED --writer reclaim--> WRITING
 `readers` 与 `seq` 是 `std::atomic`：`TryAcquireWritable` 的 victim 扫描没有拿锁，
 必须无锁读这两个字段，用普通 `uint32_t` 在 C++ 内存模型下属于数据竞争。
 
-### 7.1 消息对象的位置
+### 7.1 崩溃恢复
+
+写端在 `WRITING` 状态崩溃（`kill -9`、段错误、掉电重启后的残留）时，那一块既
+不会被 `Publish` 也不会被 `AbortWrite`，`state` 永远停在 `WRITING`，块内自旋锁
+也永远不释放。块数少的通道几次崩溃后就彻底写不进去。
+
+恢复依赖两个字段记录持有者身份：
+
+```cpp
+uint32_t owner_pid;      // 拿到 WRITING 的进程
+uint32_t owner_start;    // 该进程的启动时刻（/proc/<pid>/stat 第 22 字段）
+```
+
+**为什么必须带 starttime。** 只记 pid 不够——pid 会被内核复用。若写端崩溃后
+另一个进程恰好拿到同一 pid，仅凭 pid 会把它误判成「写端还活着」，块依旧卡死；
+反过来也可能把还在跑的新进程误判成死的而抢走它正在写的块。pid + starttime
+组合才唯一标识一个进程实例。
+
+三条路径都会用到它：
+
+1. `BlockHeader::Lock()` 抢锁失败时读 token 里的持有者，判定已退出就 CAS 接管，
+   不会永久自旋。
+2. `Segment::ReclaimZombieWriting()` 扫描所有 `WRITING` 块，持有者已退出的
+   一并 `Reset` 成 `FREE`。
+3. `TryAcquireWritable()` 在「无 FREE 块」后先尝试一次僵尸回收，再考虑回收
+   已发布块。
+
+`ProcessToken` 中 `start == 0` 表示该 token 无法比对（`/proc` 不可用），此时
+`IsProcessAlive` 保守返回 `true`：宁可等写端下次正常 `Abort`，也不能误抢一个
+还活着的写端。`Publish` 成功时会把 `owner_pid/owner_start` 清零——已发布块的
+回收只看 `readers` 与 `seq`，与原写端进程是否存活无关。
+
+代价：一次判定要读一次 `/proc/<pid>/stat`。健康路径上只有「抢不到锁」和
+「通道无 FREE 块」才会走到这里，正常发布流程完全不碰。
+
+### 7.2 消息对象的位置
 
 `T` 不是构造在 `BlockHeader` 上（那会覆盖块头），而是由 arena 分配：
 
@@ -290,16 +336,44 @@ b->msg_offset = (uint8_t*)slot - (uint8_t*)payload;
 ### 8.1 段布局
 
 ```
-SegmentHeader（含 self_base 地址握手、next_seq、payload_base）
+SegmentHeader（含 self_base 地址握手、next_seq、payload_base、type_hash）
 BlockHeader[0..n-1]（各一 cache line）
 chunk 0: Arena 元数据 + 数据区
 chunk 1: ...
 ```
 
-### 8.2 关键接口
+### 8.2 类型校验
+
+`channel` 只是 shm 对象名，本身不携带任何类型信息。两端若声明了不同的消息
+类型却共用同名 channel，读端会按错误的布局解释共享内存：轻则读到垃圾，重则
+越过 arena 边界访问。
+
+创建段时把消息类型身份写进段头：
 
 ```cpp
-bool OpenOrCreate(channel, cfg);      // 创建或打开，地址不一致即失败
+uint32_t type_hash;         // 类型名的 32 位 FNV-1a
+uint32_t type_name_len;
+char     type_name[64];     // 截断存储，仅供报错输出
+```
+
+类型名由 `Node::CreateWriter<T>` / `CreateReader<T>` 自动传入：优先取
+`T::GetTypeName()`（IDL 生成的类型都有），手写类型没有时退化为编译期的
+`__PRETTY_FUNCTION__` 签名，不依赖 RTTI。
+
+校验发生在两处：
+
+- `Segment::OpenOrCreate`：attach 时比对，不一致直接失败，并打印两端类型名
+- `Node::GetSegment`：命中进程内已缓存的 Segment 时同样比对，拦住
+  「同一进程内 `CreateWriter<A>` 与 `CreateReader<B>` 共用 channel」这种
+  最容易漏掉的写法
+
+指纹只用于一致性判断，不承担安全职责；32 位哈希碰撞的概率远低于人为写错
+类型的概率，且段头同时存了截断的类型名可直接定位。
+
+### 8.3 关键接口
+
+```cpp
+bool OpenOrCreate(channel, cfg, type_name);  // 创建或打开，地址/类型不一致即失败
 BlockHeader* TryAcquireWritable();    // FREE -> WRITING，arena 已 Reset
 void Publish(b, msg_offset, ts);      // WRITING -> PUBLISHED，分配 seq
 void AbortWrite(b);                   // WRITING -> FREE
@@ -479,6 +553,30 @@ BlockHeader* Segment::WaitRead(uint64_t* since_seq, uint64_t timeout_ns) {
 `FUTEX_WAIT` 自带值比较，天然规避 lost wakeup。实现要点是 `WaitRead` 先读一次
 `next_seq` 作为期望值，再 `FUTEX_WAIT(word, 观测值, timeout)`；`Publish` 在
 `fetch_add` 之后 `FUTEX_WAKE`。注意必须用跨进程版本（不能加 `_PRIVATE`）。
+
+### 11.3 已修复：崩溃恢复与类型校验
+
+早期版本存在两个运行期缺口，现已补齐（见 §7.1、§8.2）：
+
+| 缺口 | 后果 | 现状 |
+|------|------|------|
+| 写端在 WRITING 崩溃 | 块永久卡死，自旋锁永不解 | 已修复：owner token + 主动回收 |
+| 无消息类型校验 | 按错误布局读 shm，读垃圾或越界 | 已修复：段头 type_hash 双侧校验 |
+
+验证方式（x86，ASan/UBSan 构建）：
+
+```
+1. locktakeover        死进程持有的锁可被接管（~300us，非超时）
+2. type_a / type_b     跨进程类型不匹配被拒绝，打印两端类型名
+   type_inproc         同进程缓存复用同样被拒绝
+3. hold + kill -9      僵尸块被回收，同通道继续写 6 帧（块数 3）
+4. hold×3 + 存活       写端正确背压，不误抢在写块
+   hold×3 + kill -9    3 个僵尸块全部回收，写入立即恢复
+```
+
+未覆盖的场景：若进程在持有 WRITING 的同时被 `SIGSTOP` 挂起（而非退出），
+它仍被判为存活，块会一直等到该进程被 `SIGCONT` 或 `SIGKILL`。这是有意为之——
+无法区分「挂起」与「慢」，贸然抢占会破坏正在写的数据。
 
 ## 12. A210 待验证项
 

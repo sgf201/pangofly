@@ -25,16 +25,32 @@
 namespace pangofly {
 namespace shm {
 
+// 地址规划按指针宽度分两套：64 位用 48 位地址空间的高位区，32 位只能用
+// 用户态低地址区。默认值必须在本平台可用，否则每个应用都得自己写一遍
+// RegionConfig 才能启动。
+#if UINTPTR_MAX > 0xFFFFFFFFull
 struct RegionConfig {
   uintptr_t base = 0x600000000000ULL;   // 预留 VA 起点（48 位地址空间高位）
   size_t total_size = 8ULL << 30;       // 8 GiB
   size_t window_size = 64ULL << 20;     // 64 MiB / channel
   uint32_t max_channels = 128;
   bool require_fixed = true;            // 固定地址是硬前提
-  // 注册表自身的固定映射地址，必须落在 base..base+total_size 之外。
-  // 32 位平台无法使用 48 位地址，由应用层显式给出。
+  // 注册表自身的固定映射地址，必须落在 base..base+total_size 之外
   uintptr_t registry_base = 0x580000000000ULL;
 };
+#else
+// 32 位（如 RV1106 / armv7l）：48 位地址会被截断成 0，必须全用低地址。
+//   预留窗口区 0x40000000 起共 512MB → 结束于 0x60000000
+//   注册表     0x70000000（位于窗口区之外）
+struct RegionConfig {
+  uintptr_t base = 0x40000000ULL;
+  size_t total_size = 512ULL << 20;
+  size_t window_size = 64ULL << 20;
+  uint32_t max_channels = 8;
+  bool require_fixed = true;
+  uintptr_t registry_base = 0x70000000ULL;
+};
+#endif
 
 struct Window {
   uintptr_t addr = 0;
