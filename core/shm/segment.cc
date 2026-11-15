@@ -1,6 +1,7 @@
 #include "core/shm/segment.h"
 
 #include <fcntl.h>
+#include <limits.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -12,12 +13,58 @@
 #include <functional>
 #include <new>
 
+#if defined(__linux__)
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#endif
+
 #include "core/common/log.h"
 #include "core/shm/arena.h"
 
 namespace pangofly {
 namespace shm {
 namespace {
+
+// ---------------------------------------------------------------------------
+// futex：跨进程的低开销唤醒原语
+//
+// 用 SegmentHeader::notify_seq 作为 futex 字。相比固定的 100us 轮询，
+// 读端在无消息时真正睡眠，写端 Publish 后立刻唤醒，空载 CPU 占用为零、
+// 有消息时延迟降到微秒级。
+//
+// 若目标平台没有 SYS_futex（部分 uclibc/老内核头），退化为 nanosleep
+// 短睡轮询：语义不变，只是失去零空载开销。
+// ---------------------------------------------------------------------------
+#if defined(SYS_futex)
+int FutexWait(std::atomic<uint32_t>* addr, uint32_t expected,
+              const struct timespec* timeout) {
+  return static_cast<int>(::syscall(SYS_futex, reinterpret_cast<uint32_t*>(addr),
+                                    FUTEX_WAIT, expected, timeout, nullptr, 0));
+}
+
+void FutexWake(std::atomic<uint32_t>* addr, int nwaiters) {
+  ::syscall(SYS_futex, reinterpret_cast<uint32_t*>(addr), FUTEX_WAKE, nwaiters,
+            nullptr, nullptr, 0);
+}
+#else
+int FutexWait(std::atomic<uint32_t>* addr, uint32_t expected,
+              const struct timespec* timeout) {
+  (void)addr;
+  (void)expected;
+  // 无 futex：按超时短睡，返回 EAGAIN 让调用方重试
+  struct timespec req = (timeout != nullptr) ? *timeout : timespec{0, 1000000};
+  const long ms_max = 5;
+  if (req.tv_sec > 0 || req.tv_nsec > ms_max * 1000000L) {
+    req.tv_sec = 0;
+    req.tv_nsec = ms_max * 1000000L;
+  }
+  nanosleep(&req, nullptr);
+  errno = EAGAIN;
+  return -1;
+}
+
+void FutexWake(std::atomic<uint32_t>*, int) {}
+#endif
 
 std::string ShmName(const std::string& channel) {
   // 用完整 channel 名做 shm 名，避免哈希碰撞
@@ -202,6 +249,8 @@ bool Segment::OpenOrCreate(const std::string& channel, const SegmentConfig& cfg,
     hdr->total_size = total;
     hdr->self_base = reinterpret_cast<uint64_t>(mem);
     hdr->next_seq.store(1, std::memory_order_relaxed);
+    hdr->notify_seq.store(0, std::memory_order_relaxed);
+    hdr->reserved_pad = 0;
     hdr->payload_base = static_cast<uint32_t>(
         AlignUp(sizeof(SegmentHeader) + sizeof(BlockHeader) * cfg.block_num, 64));
 
@@ -450,6 +499,12 @@ void Segment::Publish(BlockHeader* b, uint32_t msg_offset, uint64_t ts_ns) {
   // 放在 Publish 里而不是借块时，是为了让「收端最多保留 history 条」
   // 成为不依赖写端节奏的确定性约束。
   if (header_->history > 0) EvictBeyondHistory();
+
+  // 唤醒等待中的读端。递增 notify_seq 后做 FUTEX_WAKE：
+  // 读端在 WaitRead 里用旧值做 FUTEX_WAIT，值一旦变化即被唤醒。
+  // 必须用 release 序，保证读端醒来时能看到上面写入的 state / seq。
+  header_->notify_seq.fetch_add(1, std::memory_order_release);
+  FutexWake(&header_->notify_seq, INT_MAX);
 }
 
 // 已发布块数量超过 history 时，把 seq 最小（且无读者）的块转为 FREE。
@@ -571,14 +626,44 @@ void Segment::ReleaseRead(BlockHeader* b) {
   b->readers.fetch_sub(1, std::memory_order_acq_rel);
 }
 
+// 等待新消息。
+//
+// 先用 AcquireRead 尝试立刻取到；取不到才进入等待，避免有数据时多一次
+// 系统调用。等待用 notify_seq 做 futex：
+//   1. 记下当前 notify_seq（acquire 序，与写端 release 配对）
+//   2. 再取一次消息 —— 这一步不能省，否则「取消息为空」与「记下 seq」
+//      之间若写端 Publish 并 wake，本次会永久睡下去（丢唤醒）
+//   3. 仍无消息则 FUTEX_WAIT(notify_seq, observed)，被唤醒或超时后重试
+//
+// 与固定 100us 轮询相比：空载时线程真正睡眠（CPU 0%），有消息时延迟
+// 从「平均 50us」降到「一次系统调用」。
 BlockHeader* Segment::WaitRead(uint64_t* since_seq, uint64_t timeout_ns) {
+  if (header_ == nullptr) return nullptr;
+
   const uint64_t deadline = NowNs() + timeout_ns;
-  while (true) {
+  for (;;) {
     BlockHeader* b = AcquireRead(since_seq);
     if (b != nullptr) return b;
+
+    const uint64_t now = NowNs();
+    if (now >= deadline) return nullptr;
+
+    // 记下 seq 后再查一次：若期间已有新消息，直接用，不进 futex
+    const uint32_t observed = header_->notify_seq.load(std::memory_order_acquire);
+    b = AcquireRead(since_seq);
+    if (b != nullptr) return b;
     if (NowNs() >= deadline) return nullptr;
-    struct timespec req{0, 100000};   // 100us
-    nanosleep(&req, nullptr);
+
+    // 剩余时间作为 futex 超时；即使丢唤醒也不会永久阻塞
+    uint64_t remain = deadline - NowNs();
+    if (remain == 0) return nullptr;
+    struct timespec ts;
+    ts.tv_sec = static_cast<time_t>(remain / 1000000000ULL);
+    ts.tv_nsec = static_cast<long>(remain % 1000000000ULL);
+
+    // 返回 EAGAIN 表示 seq 已变化（或被 spurious 唤醒），重试即可；
+    // ETIMEDOUT 表示超时；两者都回到循环顶部重新判断。
+    FutexWait(&header_->notify_seq, observed, &ts);
   }
 }
 

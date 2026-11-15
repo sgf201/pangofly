@@ -113,4 +113,63 @@ echo "  -> 持有者退出后 3 个块全部回收，写入恢复"
 cleanup_channel healthy_ch
 
 echo
+echo "############ 5. 读端必须被写端唤醒（futex，而非固定轮询） ############"
+cleanup_channel wake_ch
+# 读端先进 Wait(2s)；写端 300ms 后才发布。若唤醒失效，读端会一直睡到超时。
+"$BIN" waitwake wake_ch > "$TMP/wait.log" 2>&1 &
+WAIT_PID=$!
+sleep 0.1
+"$BIN" wakesend wake_ch > "$TMP/send.log" 2>&1 || fail "发送端失败"
+wait "$WAIT_PID" || fail "读端未成功取到消息"
+cat "$TMP/wait.log"
+cat "$TMP/send.log"
+grep -q "WAIT_WAKE" "$TMP/wait.log" || fail "读端未收到消息"
+# 发送端写入 payload=2048 字节，读端必须看到同样的长度
+grep -q "payload=2048" "$TMP/wait.log" || fail "读到的消息内容不对"
+US=$(sed -n 's/.*elapsed_us=\([0-9]*\).*/\1/p' "$TMP/wait.log" | head -1)
+# 写端在 300ms 后发布，读端总耗时应略大于 300ms 且远小于 2s 超时
+[ -n "$US" ] || fail "未取得等待耗时"
+[ "$US" -gt 250000 ] || fail "读端过早返回，唤醒逻辑可疑: ${US}us"
+[ "$US" -lt 1500000 ] || fail "读端等待过久，疑似未被唤醒: ${US}us"
+echo "  -> 读端在写端发布后立即被唤醒（${US}us ≈ 300ms 发送延时）"
+cleanup_channel wake_ch
+
+echo
+echo "############ 6. 跨进程窗口分配不得重叠（flock 互斥） ############"
+# 多个进程同时申请窗口。无互斥时槽位分配的多步写会交错，
+# 可能让两个不同 channel 拿到同一段 VA。
+for i in 1 2 3 4 5 6; do
+  "$BIN" slot "slot_tag_$i" > "$TMP/slot_$i.log" 2>&1 &
+done
+wait
+SLOT_OK=0
+ADDRS=""
+for i in 1 2 3 4 5 6; do
+  cat "$TMP/slot_$i.log"
+  if grep -q "SLOT_OK" "$TMP/slot_$i.log"; then
+    SLOT_OK=$((SLOT_OK + 1))
+    A=$(sed -n 's/.*addr=\(0x[0-9a-f]*\).*/\1/p' "$TMP/slot_$i.log" | head -1)
+    ADDRS="$ADDRS $A"
+  fi
+done
+[ "$SLOT_OK" -ge 6 ] || fail "并发申请窗口失败：仅 $SLOT_OK/6 成功"
+UNIQ=$(echo "$ADDRS" | tr ' ' '\n' | grep -v '^$' | sort -u | wc -l)
+[ "$UNIQ" -eq 6 ] || fail "出现地址重叠：6 个 channel 只有 $UNIQ 个不同地址"
+echo "  -> 6 个进程并发申请到 6 个互不重叠的窗口"
+# 清理本轮占用的注册表槽位：删掉注册表，下次 Init 会重建
+rm -f /dev/shm/pangofly_v2_registry 2>/dev/null || true
+
+echo
+echo "############ 7. 同一 Node 内同 channel 的 Reader 去重 ############"
+cleanup_channel dup_ch
+OUT=$("$BIN" dupreader dup_ch 2>&1)
+echo "$OUT"
+echo "$OUT" | grep -q "first=ok" || fail "第一个 Reader 创建失败"
+echo "$OUT" | grep -q "second=null" || fail "第二个 Reader 未被拒绝"
+echo "$OUT" | grep -q "already exists" || fail "缺少重复 Reader 的报错"
+echo "$OUT" | grep -q "after_release=ok" || fail "释放后无法重建 Reader"
+echo "  -> 重复 Reader 被拒绝，释放后可重建"
+cleanup_channel dup_ch
+
+echo
 echo "ALL P0 TESTS PASSED"

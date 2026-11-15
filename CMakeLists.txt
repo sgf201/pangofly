@@ -13,6 +13,7 @@ include_directories(${PROJECT_SOURCE_DIR})
 set(PANGOFLY_SRCS
   ${PROJECT_SOURCE_DIR}/core/shm/region.cc
   ${PROJECT_SOURCE_DIR}/core/shm/segment.cc
+  ${PROJECT_SOURCE_DIR}/core/shm/file_lock.cc
   ${PROJECT_SOURCE_DIR}/core/pangofly.cc
 )
 

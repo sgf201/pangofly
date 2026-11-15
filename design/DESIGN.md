@@ -75,6 +75,38 @@ struct ChannelSlot {
 - 同名 channel 复用已有窗口并 `refcount++`，保证收发双方拿到同一地址。
 - 槽位耗尽 → `Region::Acquire` 返回无效 `Window`，调用方硬失败。
 
+### 4.2.1 跨进程互斥：为什么用 flock 而不是原子变量
+
+注册表的槽位分配不是单次 CAS，而是「占首槽 → 逐个标记延续槽 → 写名字/大小」
+的多步写。中间状态对其他进程可见，必须串行化，否则两个进程可能同时看到
+同一段连续空槽并重复分配。
+
+这里用 **flock 文件锁**（`core/shm/file_lock.{h,cc}`），而不是共享内存里的
+原子变量：
+
+| | 原子变量 | flock |
+|---|---|---|
+| 持有者崩溃 | 锁值永久保留，需额外判活才敢接管 | 内核自动释放 |
+| 语义 | 自旋等待，空转 CPU | 阻塞睡眠，被唤醒即拿到 |
+| 判断正确性 | 依赖「进程是否存活」推断，有误判风险 | 内核保证，无需推断 |
+
+锁文件路径 `FileLockPath("pangofly_v2_registry.lock")`：优先 `/dev/shm`，
+不可写时退回 `/tmp`。锁文件本身不删除——删除会与正在等待的进程产生竞态
+（等待者持有的是已 unlink 的 inode，新来者创建新文件，两边不再互斥）。
+
+加锁范围：
+
+| 操作 | 是否加锁 | 原因 |
+|---|---|---|
+| `Region::Init` 的建表段 | 是 | 两个进程同时启动时，A 可能刚 `shm_open` 完（size=0、magic 未写），B 就 mmap 后按未初始化内容判断 |
+| `Region::Acquire` | 是 | 多步槽位分配 |
+| `Region::Release` | 是 | 多步槽位清理 |
+
+进程内另有一把 `std::mutex`，两层叠加：`mutex` 管同进程多线程，`flock` 管跨进程。
+
+验证：6 个进程并发 `Acquire` 不同 channel，20 轮压测，每轮 6 个窗口地址
+互不重叠（`scripts/p0_check.sh` 第 6 项 + 独立压测脚本）。
+
 ### 4.3 硬失败映射
 
 ```cpp
@@ -516,43 +548,61 @@ stage4 kept=2 first_ts=4 (expect 2 / 4) -> PASS
 
 ## 11. 已知限制
 
-### 11.1 没有通知机制，Wait 是轮询
+### 11.1 通知机制：futex（已实现）
 
-`Segment::WaitRead` 目前是固定 100us 间隔的轮询，`Publish` 不会唤醒任何人：
+早期版本 `WaitRead` 是固定 100us 轮询，`Publish` 不唤醒任何人。现已改为
+**段头 futex word + 跨进程 FUTEX_WAKE**。
+
+`SegmentHeader` 新增 `notify_seq`（`atomic<uint32_t>`，语义为「已发布消息条数」）：
 
 ```cpp
-BlockHeader* Segment::WaitRead(uint64_t* since_seq, uint64_t timeout_ns) {
-  const uint64_t deadline = NowNs() + timeout_ns;
-  while (true) {
-    BlockHeader* b = AcquireRead(since_seq);
-    if (b != nullptr) return b;
-    if (NowNs() >= deadline) return nullptr;
-    struct timespec req{0, 100000};   // 100us
-    nanosleep(&req, nullptr);
-  }
-}
+// Publish：state 置 PUBLISHED 之后
+header_->notify_seq.fetch_add(1, std::memory_order_release);
+FutexWake(&header_->notify_seq, INT_MAX);
+
+// WaitRead：取不到才进等待
+BlockHeader* b = AcquireRead(since_seq);
+if (b) return b;
+const uint32_t observed = header_->notify_seq.load(std::memory_order_acquire);
+b = AcquireRead(since_seq);            // 再查一次，避免 lost wakeup
+if (b) return b;
+FutexWait(&header_->notify_seq, observed, &ts);   // 超时兜底
 ```
 
-影响：
+三个关键点：
 
-- 消息发布后，收端平均多等约 50us 才拿得到（最坏 100us）
-- 单进程内也无法避免——同进程内 writer / reader 之间同样没有共享的唤醒源
-- 因为用的是 `nanosleep` 睡眠而不是忙等，CPU 占用不高
+1. **必须用跨进程 futex**（`SYS_futex`，不加 `FUTEX_PRIVATE_FLAG`）——段是
+   `MAP_SHARED` 映射到同地址，futex word 天然跨进程共用。
+2. **`FUTEX_WAIT` 自带值比较**：若在「读 seq」与「进 wait」之间写端已 `fetch_add`，
+   内核发现值不匹配会立刻返回 `EAGAIN`，不会睡死。
+3. **取消息 → 读 seq → 再取消息 → wait** 的顺序不能省第二步的复查，否则仍有
+   一个极窄的丢唤醒窗口。
 
-对 30fps 视觉链路（单帧预算 33ms）可以忽略；对高频控制环，这会表现为每帧固定的排队延迟。
+无 `SYS_futex` 的平台（部分 uclibc / 老内核头）自动退化为 ≤5ms 的短睡轮询，
+语义不变。
 
-### 11.2 后续可选方案
+效果（x86 Debug 构建）：
 
-| 方案 | 延迟 | 复杂度 | 崩溃安全 |
-|------|------|--------|----------|
-| 自适应退避轮询（100us → 1ms → 5ms） | ~50us 起 | 极低 | 天然安全 |
-| 段头放 futex word，`Publish` 里 `FUTEX_WAKE` | ~1us | 中 | 安全 |
-| shm 内 `pthread_cond_t`（`PTHREAD_PROCESS_SHARED`） | ~1us | 中高 | 需 robust mutex，进程崩溃会 hang |
+| 场景 | 结果 |
+|---|---|
+| 读端 `Wait(2s)`，期间无消息 | 总 CPU 时间 `user 0.00s / sys 0.00s`（旧实现会累积约 2 万次 `nanosleep`） |
+| 写端延迟 300ms 后发布一帧 | 读端在该帧发布后立即返回，总耗时 401ms ≈ 300ms 发送延时 + 启动开销 |
+| 唤醒正确性 | 读到 `payload=2048`，内容完整 |
 
-倾向 futex：`SegmentHeader` 已保证同地址映射，futex word 可直接跨进程共用；
-`FUTEX_WAIT` 自带值比较，天然规避 lost wakeup。实现要点是 `WaitRead` 先读一次
-`next_seq` 作为期望值，再 `FUTEX_WAIT(word, 观测值, timeout)`；`Publish` 在
-`fetch_add` 之后 `FUTEX_WAKE`。注意必须用跨进程版本（不能加 `_PRIVATE`）。
+验证方式见 `scripts/p0_check.sh` 第 5 项。
+
+### 11.2 其余可选方向
+
+| 方案 | 延迟 | 复杂度 | 崩溃安全 | 现状 |
+|------|------|--------|----------|------|
+| 段头 futex word | ~1us | 中 | 安全 | **已实现** |
+| 环形通知队列（多槽，防伪共享） | ~1us | 高 | 安全 | 未做：需要多读者场景才有收益 |
+| shm 内 `pthread_cond_t` | ~1us | 中高 | 需 robust mutex，进程崩溃会 hang | 不采用 |
+
+futex 当前是「单个 word + 全量唤醒」，所有等待者被一起唤醒后各自
+`AcquireRead`。读者数少（个位数）时这比环形队列更简单且没有丢失风险；
+若将来出现「单个 channel 数十个读者」的场景，再考虑 scyber 那种
+512 槽环形缓冲 + 转置 seqs。
 
 ### 11.3 已修复：崩溃恢复与类型校验
 
@@ -563,15 +613,33 @@ BlockHeader* Segment::WaitRead(uint64_t* since_seq, uint64_t timeout_ns) {
 | 写端在 WRITING 崩溃 | 块永久卡死，自旋锁永不解 | 已修复：owner token + 主动回收 |
 | 无消息类型校验 | 按错误布局读 shm，读垃圾或越界 | 已修复：段头 type_hash 双侧校验 |
 
-验证方式（x86，ASan/UBSan 构建）：
+### 11.4 已修复：重复 Reader
+
+同一 Node 内对同一 channel 重复 `CreateReader` 曾会静默成功。两个 Reader
+各自维护 `since_seq_`，写端回收块时无法同时满足两个进度，表现为其中一方
+「随机丢帧」。
+
+现改为在 `Node::CreateReader` 里用 `std::map<std::string, std::weak_ptr<void>>`
+查重：已有存活 Reader 则返回 `nullptr` 并打 `[ERROR]`；旧 Reader 已销毁则
+允许重建。用 `weak_ptr` 而非 `shared_ptr` 是为了不让 Node 延长 Reader 的
+生命周期——Reader 仍由调用方持有。
+
+需要多处消费同一 channel 时，应共享同一个 Reader，或放到不同 Node 里。
+
+### 11.5 验证矩阵
+
+`scripts/p0_check.sh` 覆盖全部修复项：
 
 ```
-1. locktakeover        死进程持有的锁可被接管（~300us，非超时）
+1. locktakeover        死进程持有的锁可被接管（~190us，非超时）
 2. type_a / type_b     跨进程类型不匹配被拒绝，打印两端类型名
    type_inproc         同进程缓存复用同样被拒绝
 3. hold + kill -9      僵尸块被回收，同通道继续写 6 帧（块数 3）
 4. hold×3 + 存活       写端正确背压，不误抢在写块
    hold×3 + kill -9    3 个僵尸块全部回收，写入立即恢复
+5. waitwake/wakesend   futex 唤醒：读端 2s 空闲 CPU 为 0；写端发布后立即返回
+6. slot × 6 并发       6 个进程申请的窗口地址互不重叠（flock 互斥）
+7. dupreader           重复 Reader 被拒绝，释放后可重建
 ```
 
 未覆盖的场景：若进程在持有 WRITING 的同时被 `SIGSTOP` 挂起（而非退出），
@@ -583,7 +651,7 @@ BlockHeader* Segment::WaitRead(uint64_t* since_seq, uint64_t timeout_ns) {
 - RISC-V 64 位上 `0x600000000000` 起始的 VA 窗口是否可用（需确认内核 VA 布局）
 - GCC 8.3 + uclibc 下 `std::vector` 的 allocator 传播行为
 - 与 TORQ 运行时共存时的内存映射冲突
-- 无通知机制下的实际唤醒延迟，是否满足上层帧率
+- ~~无通知机制下的实际唤醒延迟，是否满足上层帧率~~ 已完成 futex 改造，x86 上验证通过；A210 上待实测
 
 ## 13. 迁移历史
 

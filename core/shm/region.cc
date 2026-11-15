@@ -8,9 +8,11 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
 
 #include "core/common/log.h"
+#include "core/shm/file_lock.h"
 
 namespace pangofly {
 namespace shm {
@@ -20,6 +22,10 @@ constexpr uint64_t kRegistryMagic = 0x5046524547494F4EULL;  // "PFREGION"
 constexpr uint32_t kRegistryVersion = 2;
 constexpr size_t kNameMax = 64;
 constexpr const char* kRegistryName = "/pangofly_v2_registry";
+// 注册表跨进程互斥锁的文件名。槽位分配是「多步写」操作（CAS 占首槽、
+// 再逐个标记延续槽），中间状态对其他进程可见，必须用文件锁串行化，
+// 否则两个进程可能同时看到一个 span 内的空槽而重复分配。
+constexpr const char* kRegistryLockName = "pangofly_v2_registry.lock";
 
 enum SlotState : uint32_t {
   SLOT_FREE = 0,
@@ -54,6 +60,9 @@ struct RegionState {
   Registry* reg = nullptr;
   size_t reg_bytes = 0;
   std::mutex mu;
+  // 跨进程槽位分配锁。进程内已由 mu 串行化，这里再加一层文件锁，
+  // 保证多个进程对同一块注册表的读改写不会交错。
+  std::unique_ptr<FileLock> cross_proc_lock;
 };
 
 RegionState& State() {
@@ -129,6 +138,16 @@ bool Region::Init(const RegionConfig& cfg) {
   }
 
   const size_t bytes = RegistryBytes(cfg);
+
+  // 注册表的「创建 / 打开 / 初始化」整体串行化。
+  // 否则两个进程同时启动时，A 可能刚 shm_open 完（size 仍为 0、magic 尚未写），
+  // B 就 mmap 上去并按未初始化内容判断，得到随机的 magic 失败。
+  st.cross_proc_lock = std::make_unique<FileLock>(FileLockPath(kRegistryLockName));
+  if (!st.cross_proc_lock->valid()) {
+    PANGOFLY_WARN << "[region] cross-process lock unavailable; concurrent Init "
+                  << "across processes is not serialized" << std::endl;
+  }
+  FileLockGuard xlock(*st.cross_proc_lock);
 
   int fd = shm_open(kRegistryName, O_RDWR | O_CREAT | O_EXCL, 0600);
   bool creator = (fd >= 0);
@@ -213,6 +232,10 @@ Window Region::Acquire(const std::string& channel, size_t need_bytes) {
   std::lock_guard<std::mutex> lk(st.mu);
   if (!st.inited) return {};
 
+  // 进程内已由 st.mu 串行化；文件锁负责跨进程。两者都持有才能安全读改写
+  // 槽位表：槽位分配不是单次 CAS，而是「占首槽 + 标记延续槽」的多步写。
+  FileLockGuard xlock(*st.cross_proc_lock);
+
   Registry* reg = st.reg;
   const size_t wsize = static_cast<size_t>(reg->window_size);
   const uint32_t max_slots = reg->max_channels;
@@ -294,6 +317,9 @@ void Region::Release(const Window& w) {
   RegionState& st = State();
   std::lock_guard<std::mutex> lk(st.mu);
   if (!st.inited || !w.valid()) return;
+
+  // 释放同样是多步写（清首槽 + 清延续槽），必须与 Acquire 用同一把锁
+  FileLockGuard xlock(*st.cross_proc_lock);
 
   Registry* reg = st.reg;
   if (w.index >= reg->max_channels) return;

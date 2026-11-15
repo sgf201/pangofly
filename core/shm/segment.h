@@ -46,8 +46,8 @@ class Writer;
 template <typename T>
 class Reader;
 
-constexpr uint64_t kSegmentMagic   = 0x50465345474D4E33ULL;  // "PFSEGMN3"
-constexpr uint32_t kSegmentVersion = 3;
+constexpr uint64_t kSegmentMagic   = 0x50465345474D4E34ULL;  // "PFSEGMN4"
+constexpr uint32_t kSegmentVersion = 4;
 
 // 类型名指纹：32 位 FNV-1a。
 // 只用于「两端是否声明了同一个消息类型」的一致性判断，不承担安全职责；
@@ -93,9 +93,15 @@ struct alignas(64) SegmentHeader {
   uint32_t type_hash;
   uint32_t type_name_len;
   char type_name[64];
+
+  // 唤醒序号：写端每次 Publish 后 +1 并对它做 futex wake，读端在
+  // WaitRead 里对它做 futex wait。值为「已发布消息条数」，读端据此判断
+  // 是否有新消息可取，避免固定的 100us 轮询。
+  std::atomic<uint32_t> notify_seq;
+  uint32_t reserved_pad;
 };
 
-static_assert(sizeof(SegmentHeader) == 128 && sizeof(SegmentHeader) % 64 == 0,
+static_assert(sizeof(SegmentHeader) == 192 && sizeof(SegmentHeader) % 64 == 0,
               "SegmentHeader must occupy whole cache lines");
 
 class Segment {

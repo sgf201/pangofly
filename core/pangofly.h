@@ -20,6 +20,7 @@
 #include <string>
 #include <type_traits>
 
+#include "core/common/log.h"
 #include "core/shm/node.h"
 #include "core/shm/region.h"
 #include "core/shm/segment.h"
@@ -78,12 +79,42 @@ class Node {
     return std::make_shared<shm::Writer<MessageT>>(seg);
   }
 
+  // 同一 Node 内同一个 channel 只允许一个 Reader。
+  //
+  // 原因：Reader 持有自己的 since_seq_（已消费到的 seq）。若同一 channel 上
+  // 同时存在两个 Reader，它们各自推进进度，写端回收块时无法同时满足两个
+  // 读者的进度，容易造成其中一方持续读不到数据（表现为「随机丢帧」）。
+  // 需要多处消费同一 channel 时，正确做法是让它们共享同一个 Reader，
+  // 或分别放在不同的 Node 里（此时是两个独立的消费端，语义明确）。
+  //
+  // 返回 nullptr 表示该 channel 上已有存活 Reader。
   template <typename MessageT>
   std::shared_ptr<shm::Reader<MessageT>> CreateReader(
       const std::string& channel, const shm::SegmentConfig& cfg = {}) {
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      auto it = readers_.find(channel);
+      if (it != readers_.end()) {
+        // weak_ptr 仍可 lock 说明旧 Reader 还活着，拒绝重复创建；
+        // 已销毁则允许重建（常见于「先销毁再重建」的用法）。
+        std::shared_ptr<void> existing = it->second.lock();
+        if (existing) {
+          PANGOFLY_ERROR << "[node] reader for channel '" << channel
+                         << "' already exists in node '" << name_
+                         << "'; reuse it or create another Node" << std::endl;
+          return nullptr;
+        }
+        readers_.erase(it);
+      }
+    }
+
     auto seg = GetSegment(channel, cfg, detail::MessageTypeName<MessageT>());
     if (!seg) return nullptr;
-    return std::make_shared<shm::Reader<MessageT>>(seg);
+    auto reader = std::make_shared<shm::Reader<MessageT>>(seg);
+
+    std::lock_guard<std::mutex> lk(mu_);
+    readers_[channel] = reader;
+    return reader;
   }
 
  private:
@@ -94,6 +125,9 @@ class Node {
   std::string name_;
   std::mutex mu_;
   std::map<std::string, std::shared_ptr<shm::Segment>> segments_;
+  // 已创建的 Reader，key 为 channel 名。存 weak_ptr 而不是 shared_ptr：
+  // Node 不延长 Reader 的生命周期，Reader 由调用方持有；这里只用来查重。
+  std::map<std::string, std::weak_ptr<void>> readers_;
 };
 
 std::unique_ptr<Node> CreateNode(const std::string& node_name);
