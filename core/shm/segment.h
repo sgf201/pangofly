@@ -131,6 +131,17 @@ class Segment {
 
   void Dump() const;
 
+  // ------------------------------------------------------------ 事件通知
+  // notify_seq 的当前值。协程调度器用它做「有没有新消息」的判定基准。
+  uint32_t NotifySeq() const noexcept {
+    return header_ ? header_->notify_seq.load(std::memory_order_acquire) : 0;
+  }
+
+  // 等待 notify_seq 发生变化（不消费消息、不推进 since_seq）。
+  // 用于「外部事件线程」阻塞等待数据到达，再唤醒协程。
+  // 返回 true 表示 seq 已变化；false 表示超时或段失效。
+  bool WaitNotify(uint32_t* observed, uint64_t timeout_ns);
+
  private:
   // 块级接口仅供 Writer / Reader / Sample / View 使用。对外只暴露
   // Sample / View，这样上层拿不到 BlockHeader*，也就无法把它存成

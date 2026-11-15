@@ -25,3 +25,7 @@ target_link_libraries(shm_thread_pipeline pangofly Threads::Threads rt)
 # 崩溃恢复 + 类型校验的多进程自测用例（配合 scripts/p0_check.sh 使用）
 add_executable(shm_p0_check p0_check.cc)
 target_link_libraries(shm_p0_check pangofly pthread rt)
+
+# 协程机制自测（上下文切换 / 事件唤醒 / Runtime 订阅）
+add_executable(shm_coro_check coro_check.cc)
+target_link_libraries(shm_coro_check pangofly pthread rt)
