@@ -667,6 +667,37 @@ BlockHeader* Segment::WaitRead(uint64_t* since_seq, uint64_t timeout_ns) {
   }
 }
 
+// 等待 notify_seq 变化，不取消息。
+//
+// 与 WaitRead 的区别：WaitRead 会真正消费一条消息并推进 since_seq，由
+// 消费者自己调用；本函数只做「睡到有人发布」这件事，由独立的事件/投递
+// 线程调用，醒来后把消费任务交给工作线程。
+//
+// 同样采用「读 seq → 复查 seq → futex wait」的防丢唤醒次序。
+bool Segment::WaitNotify(uint32_t* observed, uint64_t timeout_ns) {
+  if (header_ == nullptr) return false;
+
+  const uint64_t deadline = NowNs() + timeout_ns;
+  const uint32_t base = (observed != nullptr) ? *observed : NotifySeq();
+  if (observed != nullptr) *observed = base;
+
+  for (;;) {
+    const uint32_t cur = NotifySeq();
+    if (cur != base) {
+      if (observed != nullptr) *observed = cur;
+      return true;
+    }
+    const uint64_t now = NowNs();
+    if (now >= deadline) return false;
+
+    uint64_t remain = deadline - now;
+    struct timespec ts;
+    ts.tv_sec = static_cast<time_t>(remain / 1000000000ULL);
+    ts.tv_nsec = static_cast<long>(remain % 1000000000ULL);
+    FutexWait(&header_->notify_seq, cur, &ts);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 布局
 // ---------------------------------------------------------------------------

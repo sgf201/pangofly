@@ -9,11 +9,14 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -fPIC")
 
 include_directories(${PROJECT_SOURCE_DIR})
 
-# v2 只需 core/shm 下的实现（地址层 + 分配层 + 消息层 + 传输层）
+# v2 只需 core/shm 下的实现（地址层 + 分配层 + 消息层 + 传输层），
+# 外加 core/concurrency 的线程池运行时
 set(PANGOFLY_SRCS
   ${PROJECT_SOURCE_DIR}/core/shm/region.cc
   ${PROJECT_SOURCE_DIR}/core/shm/segment.cc
   ${PROJECT_SOURCE_DIR}/core/shm/file_lock.cc
+  ${PROJECT_SOURCE_DIR}/core/concurrency/thread_pool.cc
+  ${PROJECT_SOURCE_DIR}/core/concurrency/runtime.cc
   ${PROJECT_SOURCE_DIR}/core/pangofly.cc
 )
 
